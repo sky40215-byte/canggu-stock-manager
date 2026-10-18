@@ -463,6 +463,50 @@
         : '網站管理者尚未在伺服器設定 Fugle API 金鑰。金鑰僅應存放在伺服器環境變數，請勿輸入網頁或貼到聊天。';
     }
   }
+  const assistantHistory = [];
+  function addAssistantMessage(role, content) {
+    const list = $('assistantMessages');
+    list.querySelector('.assistant-empty')?.remove();
+    const bubble = document.createElement('div');
+    bubble.className = `assistant-message assistant-message-${role}`;
+    const label = document.createElement('b'); label.textContent = role === 'user' ? '你' : '助理';
+    const text = document.createElement('p'); text.textContent = content;
+    bubble.append(label, text); list.append(bubble); list.scrollTop = list.scrollHeight;
+    return bubble;
+  }
+  async function checkAssistantStatus() {
+    try {
+      const response = await fetch('/api/assistant/status', { cache: 'no-store' }), data = await response.json();
+      $('assistantBadge').textContent = data.configured ? 'Gemini 已設定' : '尚未設定助理';
+      $('assistantBadge').classList.toggle('source-warning', !data.configured);
+      if (!data.configured) $('assistantStatus').textContent = '管理者尚未設定 GEMINI_API_KEY。請在 Google AI Studio 建立金鑰，再加入 Render 環境變數或本機 %LOCALAPPDATA%\\Canggu\\config.env。';
+    } catch { $('assistantBadge').textContent = '助理設定無法讀取'; $('assistantStatus').textContent = '目前無法連線到助理設定，請重新整理後再試。'; }
+  }
+  $('assistantForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const question = $('assistantInput').value.trim();
+    if (!question) return;
+    if (!$('assistantConsent').checked) { $('assistantStatus').textContent = '請先閱讀並勾選資料傳送同意，再送出問題。'; $('assistantConsent').focus(); return; }
+    $('assistantConsent').checked = false;
+    const button = $('assistantSend'); button.disabled = true; $('assistantStatus').textContent = '助理正在整理回答…';
+    addAssistantMessage('user', question); $('assistantInput').value = '';
+    assistantHistory.push({ role: 'user', content: question });
+    const pending = addAssistantMessage('assistant', '正在思考…');
+    try {
+      const { data } = await supabaseClient?.auth.getSession() || {};
+      const headers = { 'Content-Type': 'application/json' };
+      if (data?.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
+      const response = await fetch('/api/assistant', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ messages: assistantHistory.slice(-10) }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '助理暫時無法回答，請稍後再試。');
+      pending.querySelector('p').textContent = result.answer;
+      assistantHistory.push({ role: 'assistant', content: result.answer });
+      $('assistantStatus').textContent = '';
+    } catch (error) {
+      pending.remove(); assistantHistory.pop(); addAssistantMessage('assistant', error.message || '連線失敗，請稍後再試。'); $('assistantStatus').textContent = '這次沒有取得回答；你可以稍後重新送出。';
+    } finally { button.disabled = false; $('assistantInput').focus(); }
+  });
+  checkAssistantStatus();
   $('loadTrend').addEventListener('click', async () => {
     const symbol = $('trendSymbol').value.trim(), days = $('trendRange').value;
     if (!/^\d{4,6}$/.test(symbol)) return showToast('請輸入 4–6 碼股票代號。');
@@ -602,7 +646,7 @@
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', references: '研究資料' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', assistant: '詢問助理', references: '研究資料' };
   function showPage(page, updateHash = false) {
     if (!pageTitles[page]) page = 'overview';
     const mainSections = [...document.querySelectorAll('.main-content > section')];

@@ -16,9 +16,11 @@ try {
 } catch { /* Local AppData config is optional; environment variables also work. */ }
 const PORT = Number(process.env.CANGGU_PORT || process.env.PORT || 4174);
 const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const fundamentalsCache = new Map();
+const assistantRateLimits = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 function send(res, status, data, type = 'application/json; charset=utf-8') {
@@ -187,6 +189,46 @@ async function requireAuthenticatedUser(req, res) {
     return null;
   }
 }
+async function readJsonBody(req, maxBytes = 16000) {
+  let raw = '', size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw Object.assign(new Error('訊息內容太長，請縮短後再送出。'), { status: 413 });
+    raw += chunk;
+  }
+  try { return JSON.parse(raw || '{}'); }
+  catch { throw Object.assign(new Error('訊息格式不正確。'), { status: 400 }); }
+}
+function checkAssistantRateLimit(key) {
+  const now = Date.now(), windowMs = 60 * 60 * 1000, current = assistantRateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    assistantRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    if (assistantRateLimits.size > 5000) for (const [id, item] of assistantRateLimits) if (item.resetAt <= now) assistantRateLimits.delete(id);
+    return true;
+  }
+  if (current.count >= 20) return false;
+  current.count += 1;
+  return true;
+}
+async function askGemini(messages) {
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
+    method: 'POST', signal: AbortSignal.timeout(30000),
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: '你是藏股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。' }] },
+      contents: messages.map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
+      generationConfig: { maxOutputTokens: 900, temperature: 0.5 }
+    })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 502;
+    throw Object.assign(new Error(response.status === 429 ? '助理目前的服務額度已用完，請稍後再試。' : '助理服務暫時無法回答，請稍後再試。'), { status });
+  }
+  const answer = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim();
+  if (!answer) throw Object.assign(new Error('助理沒有產生回答，請換個方式提問。'), { status: 502 });
+  return answer;
+}
 const screenCache = new Map();
 async function screenStocks(priceLimit, horizon) {
   if (!FUGLE_API_KEY) return { configured: false };
@@ -223,6 +265,22 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     if (url.pathname === '/api/sync/config') return send(res, 200, { configured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY), production: process.env.NODE_ENV === 'production', url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
+    if (url.pathname === '/api/assistant/status') return send(res, 200, { configured: Boolean(GEMINI_API_KEY) });
+    if (url.pathname === '/api/assistant' && req.method === 'POST') {
+      let user = null;
+      if (process.env.NODE_ENV === 'production' || SUPABASE_URL) {
+        user = await requireAuthenticatedUser(req, res);
+        if (!user) return;
+      }
+      if (!GEMINI_API_KEY) return send(res, 503, { error: '助理尚未設定 Gemini API 金鑰。' });
+      const rateKey = user?.id || req.socket.remoteAddress || 'local';
+      if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時最多詢問 20 次，請稍後再試。' });
+      const body = await readJsonBody(req);
+      if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 10) return send(res, 400, { error: '對話訊息數量不正確。' });
+      const messages = body.messages.map((item) => ({ role: item?.role, content: typeof item?.content === 'string' ? item.content.trim() : '' }));
+      if (messages.some((item) => !['user', 'assistant'].includes(item.role) || !item.content || item.content.length > 2000) || messages.at(-1)?.role !== 'user') return send(res, 400, { error: '每則訊息需在 2,000 字內，且最新訊息必須是你的提問。' });
+      return send(res, 200, { answer: await askGemini(messages) });
+    }
     if (url.pathname === '/api/fugle/status') {
       if (!await requireAuthenticatedUser(req, res)) return;
       return send(res, 200, { configured: Boolean(FUGLE_API_KEY) });
@@ -265,7 +323,7 @@ const server = http.createServer(async (req, res) => {
     const body = await readFile(file);
     return send(res, 200, body, MIME[extname(file)] || 'application/octet-stream');
   } catch (error) {
-    return send(res, 502, { error: error?.message || '連線失敗，請稍後再試。' });
+    return send(res, error?.status || 502, { error: error?.message || '連線失敗，請稍後再試。' });
   }
 });
 
