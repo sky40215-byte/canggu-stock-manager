@@ -12,7 +12,7 @@ try {
     if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
   }
 } catch { /* Local AppData config is optional; environment variables also work. */ }
-const PORT = Number(process.env.CANGGU_PORT || 4174);
+const PORT = Number(process.env.CANGGU_PORT || process.env.PORT || 4174);
 const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
