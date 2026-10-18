@@ -496,7 +496,7 @@
       const { data } = await supabaseClient?.auth.getSession() || {};
       const headers = { 'Content-Type': 'application/json' };
       if (data?.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
-      const response = await fetch('/api/assistant', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ messages: assistantHistory.slice(-10) }) });
+      const response = await fetch('/api/assistant', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ topic: $('assistantTopic').value, messages: assistantHistory.slice(-10) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '助理暫時無法回答，請稍後再試。');
       pending.querySelector('p').textContent = result.answer;

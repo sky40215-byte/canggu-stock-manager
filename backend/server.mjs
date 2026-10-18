@@ -210,12 +210,19 @@ function checkAssistantRateLimit(key) {
   current.count += 1;
   return true;
 }
-async function askGemini(messages) {
+const assistantTopics = {
+  general: '一般問題', overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置',
+  alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢分析',
+  holdingAnalysis: '我的持股分析', stockDesk: '個股查詢／自選', candidates: '候選股篩選', watchlist: '價格觀察紀錄',
+  news: '新聞與公司公告', references: '研究來源與文獻'
+};
+async function askGemini(messages, topic) {
+  const topicInstruction = topic === '一般問題' ? '' : `使用者選擇的網站主題是「${topic}」。請將回答聚焦於此功能及其相關概念；你只收到主題名稱，沒有讀取該頁或其中的個人資料。`;
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
     method: 'POST', signal: AbortSignal.timeout(30000),
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: '你是藏股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。' }] },
+      systemInstruction: { parts: [{ text: `你是藏股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。${topicInstruction}` }] },
       contents: messages.map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
       generationConfig: { maxOutputTokens: 900, temperature: 0.5 }
     })
@@ -276,10 +283,11 @@ const server = http.createServer(async (req, res) => {
       const rateKey = user?.id || req.socket.remoteAddress || 'local';
       if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時最多詢問 20 次，請稍後再試。' });
       const body = await readJsonBody(req);
+      const topic = assistantTopics[body.topic] || '一般問題';
       if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 10) return send(res, 400, { error: '對話訊息數量不正確。' });
       const messages = body.messages.map((item) => ({ role: item?.role, content: typeof item?.content === 'string' ? item.content.trim() : '' }));
       if (messages.some((item) => !['user', 'assistant'].includes(item.role) || !item.content || item.content.length > 2000) || messages.at(-1)?.role !== 'user') return send(res, 400, { error: '每則訊息需在 2,000 字內，且最新訊息必須是你的提問。' });
-      return send(res, 200, { answer: await askGemini(messages) });
+      return send(res, 200, { answer: await askGemini(messages, topic) });
     }
     if (url.pathname === '/api/fugle/status') {
       if (!await requireAuthenticatedUser(req, res)) return;
