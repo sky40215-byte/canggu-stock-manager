@@ -2,6 +2,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
@@ -21,6 +22,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const fundamentalsCache = new Map();
 const assistantRateLimits = new Map();
+const fugleHistoryRequests = [];
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 function send(res, status, data, type = 'application/json; charset=utf-8') {
@@ -154,6 +156,12 @@ async function fugleTrend(symbol, days) {
   const end = new Date(), start = new Date(end.getTime() - days * 86400000);
   const date = (value) => value.toISOString().slice(0, 10);
   const params = new URLSearchParams({ from: date(start), to: date(end), fields: 'open,high,low,close,volume', sort: 'asc' });
+  while (true) {
+    const now = Date.now();
+    while (fugleHistoryRequests.length && now - fugleHistoryRequests[0] >= 60000) fugleHistoryRequests.shift();
+    if (fugleHistoryRequests.length < 55) { fugleHistoryRequests.push(now); break; }
+    await new Promise((resolve) => setTimeout(resolve, Math.max(250, 60050 - (now - fugleHistoryRequests[0]))));
+  }
   const response = await fetch(`https://api.fugle.tw/marketdata/v1.0/stock/historical/candles/${encodeURIComponent(symbol)}?${params}`, { signal: AbortSignal.timeout(15000), headers: { 'X-API-KEY': FUGLE_API_KEY, 'User-Agent': 'CangguPersonalStockApp/1.0' } });
   if (!response.ok) {
     const message = response.status === 401 || response.status === 403 ? 'Fugle API 金鑰無效或方案未開通。' : response.status === 429 ? 'Fugle API 請求已達方案限制，請稍後再試。' : response.status === 404 ? '這段期間沒有可用的歷史行情。' : `Fugle 回應錯誤（${response.status}）。`;
@@ -236,36 +244,64 @@ async function askGemini(messages, topic) {
   if (!answer) throw Object.assign(new Error('助理沒有產生回答，請換個方式提問。'), { status: 502 });
   return answer;
 }
-const screenCache = new Map();
+const screenCache = new Map(), screenJobs = new Map(), screenJobByKey = new Map();
+function analyzeScreenCandles(quote, candles, horizon) {
+  if (candles.length < Math.max(22, horizon + 1)) return null;
+  const last = candles.at(-1), previous = candles.at(-2), baseline = candles.at(-horizon - 1), window = candles.slice(-horizon - 1, -1), recent20 = candles.slice(-21, -1);
+  const support = Math.min(...window.map((row) => Number(row.low)).filter(Number.isFinite)), resistance = Math.max(...window.map((row) => Number(row.high)).filter(Number.isFinite));
+  const trueRanges = candles.slice(-15).map((row, index, rows) => { const prev = candles[candles.length - rows.length + index - 1]; const h = Number(row.high), l = Number(row.low), pc = Number(prev?.close); return Number.isFinite(h) && Number.isFinite(l) ? Number.isFinite(pc) ? Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc)) : h-l : null; }).filter(Number.isFinite);
+  const atr = trueRanges.length ? average(trueRanges) : last.close * 0.04;
+  const averageVolume = average(recent20.map((row) => Number(row.volume)).filter(Number.isFinite)), volumeOK = averageVolume > 0 && Number(last.volume) >= averageVolume * 1.2;
+  const horizonReturn = baseline?.close > 0 ? (last.close / baseline.close - 1) * 100 : 0, bullish = last.sma20 != null && last.sma60 != null && last.close > last.sma20 && last.sma20 > last.sma60;
+  const improving = last.macdHistogram != null && previous?.macdHistogram != null && last.macdHistogram > previous.macdHistogram;
+  const rsi = last.rsi14;
+  const score = (horizonReturn > 0 ? 1 : 0) + (horizonReturn > 2 ? 1 : 0) + (bullish ? 2 : 0) + (rsi >= 40 && rsi <= 65 ? 1 : 0) + (improving ? 1 : 0) + (volumeOK ? 1 : 0) - (rsi >= 75 ? 2 : 0);
+  const breakout = last.close > resistance && bullish && rsi >= 50 && rsi <= 68 && improving && volumeOK;
+  const entryLow = breakout ? resistance : support, entryHigh = breakout ? resistance + atr * 0.25 : support + atr * 0.5, stop = Math.max(0, (breakout ? resistance : support) - atr * 0.5);
+  const entry = (entryLow + entryHigh) / 2, risk = Math.max(entry - stop, atr * 0.25), target1 = entry + risk, target2 = entry + risk * 2;
+  const pullback = !breakout && bullish && last.close >= entryLow && last.close <= entryHigh && rsi >= 35 && rsi <= 60 && improving;
+  const overextended = last.close > entryHigh;
+  const nearBuyZone = !overextended && Math.abs(last.close - entry) <= atr && bullish && rsi >= 38 && rsi <= 68 && improving;
+  const priority = pullback ? 4 : breakout && !overextended ? 3 : nearBuyZone ? 2 : overextended || rsi >= 75 ? 0 : 1;
+  const priorityLabel = pullback ? '回測區內・條件改善' : breakout && !overextended ? '突破量價確認' : nearBuyZone ? '接近觀察區・趨勢偏多' : overextended ? '高於觀察區・避免追價' : '一般觀察';
+  const status = pullback ? '回測支撐觀察區，等待轉強確認' : breakout ? (overextended ? '突破成立但已高於觀察區，避免追價' : '突破量價條件符合（以最近日 K 計算）') : overextended ? '現價高於觀察區，避免追價' : score >= 5 ? '趨勢條件較佳，等待價格進入觀察區' : '條件未齊，列為觀察';
+  const zoneDistance = Math.abs(last.close - entry) / Math.max(atr, 0.01);
+  return { code: quote.code, name: quote.name, market: quote.market, price: quote.price, date: last.date, turnover: quote.turnover, horizonReturn, score, priority, priorityLabel, zoneDistance, rsi, entryLow, entryHigh, stop, target1, target2, support, resistance, status, volumeOK, smaTrend: bullish, improving, breakout, pullback };
+}
+async function runScreenJob(job, universe) {
+  let next = 0, failures = 0;
+  const candidates = [];
+  const worker = async () => {
+    while (next < universe.length) {
+      const index = next++, quote = universe[index];
+      try {
+        const trend = await fugleTrend(String(quote.code), 90), item = analyzeScreenCandles(quote, trend.candles, job.horizon);
+        if (item) candidates.push(item);
+      } catch { failures++; }
+      job.scanned++;
+    }
+  };
+  await Promise.all(Array.from({ length: 5 }, worker));
+  candidates.sort((a, b) => b.priority - a.priority || b.score - a.score || a.zoneDistance - b.zoneDistance || b.horizonReturn - a.horizonReturn || Number(b.turnover) - Number(a.turnover));
+  const data = { configured: true, status: 'complete', candidates: candidates.slice(0, 10), eligibleCount: universe.length, analyzedCount: job.scanned, horizon: job.horizon, updatedAt: job.updatedAt, warnings: failures ? [`${failures} 檔歷史資料無法取得或超出 API 配額`] : [] };
+  job.status = 'complete'; job.data = data; job.completedAt = Date.now();
+  screenCache.set(job.key, { time: Date.now(), data });
+  screenJobByKey.delete(job.key);
+}
 async function screenStocks(priceLimit, horizon) {
   if (!FUGLE_API_KEY) return { configured: false };
-  const cacheKey = `${priceLimit}:${horizon}`, cached = screenCache.get(cacheKey);
-  if (cached && Date.now() - cached.time < 180000) return cached.data;
+  const key = `${priceLimit}:${horizon}`, cached = screenCache.get(key);
+  if (cached && Date.now() - cached.time < 180000) return { ...cached.data, fromCache: true };
+  const activeId = screenJobByKey.get(key), activeJob = activeId && screenJobs.get(activeId);
+  if (activeJob) return { configured: true, status: activeJob.status, jobId: activeJob.id, scanned: activeJob.scanned, total: activeJob.total };
   const market = await quotes();
-  const universe = market.quotes.filter((row) => /^\d{4}$/.test(String(row.code)) && !String(row.code).startsWith('0') && Number(row.price) > 0 && Number(row.price) <= priceLimit && Number(row.turnover) >= 30000000 && !/(ETF|基金|存託|權證|牛|熊|期貨|債)/i.test(String(row.name))).sort((a, b) => Number(b.turnover) - Number(a.turnover)).slice(0, 12);
-  if (!universe.length) return { configured: true, candidates: [], updatedAt: market.updatedAt, message: '價格上限內沒有符合成交值篩選的個股；可提高每股價格上限後再試。' };
-  const results = await Promise.allSettled(universe.map(async (quote) => {
-    const trend = await fugleTrend(String(quote.code), 90), candles = trend.candles;
-    if (candles.length < Math.max(22, horizon + 1)) return null;
-    const last = candles.at(-1), previous = candles.at(-2), baseline = candles.at(-horizon - 1), window = candles.slice(-horizon - 1, -1), recent20 = candles.slice(-21, -1);
-    const support = Math.min(...window.map((row) => Number(row.low)).filter(Number.isFinite)), resistance = Math.max(...window.map((row) => Number(row.high)).filter(Number.isFinite));
-    const trueRanges = candles.slice(-15).map((row, index, rows) => { const prev = candles[candles.length - rows.length + index - 1]; const h = Number(row.high), l = Number(row.low), pc = Number(prev?.close); return Number.isFinite(h) && Number.isFinite(l) ? Number.isFinite(pc) ? Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc)) : h-l : null; }).filter(Number.isFinite);
-    const atr = trueRanges.length ? average(trueRanges) : last.close * 0.04;
-    const averageVolume = average(recent20.map((row) => Number(row.volume)).filter(Number.isFinite)), volumeOK = averageVolume > 0 && Number(last.volume) >= averageVolume * 1.2;
-    const horizonReturn = baseline?.close > 0 ? (last.close / baseline.close - 1) * 100 : 0, bullish = last.sma20 != null && last.sma60 != null && last.close > last.sma20 && last.sma20 > last.sma60;
-    const improving = last.macdHistogram != null && previous?.macdHistogram != null && last.macdHistogram > previous.macdHistogram;
-    let score = (horizonReturn > 0 ? 1 : 0) + (horizonReturn > 2 ? 1 : 0) + (bullish ? 2 : 0) + (last.rsi14 >= 40 && last.rsi14 <= 65 ? 1 : 0) + (improving ? 1 : 0) + (volumeOK ? 1 : 0) - (last.rsi14 >= 75 ? 2 : 0);
-    const breakout = last.close > resistance && bullish && last.rsi14 >= 50 && last.rsi14 <= 68 && improving && volumeOK;
-    const entryLow = breakout ? resistance : support, entryHigh = breakout ? resistance + atr * 0.25 : support + atr * 0.5, stop = Math.max(0, (breakout ? resistance : support) - atr * 0.5);
-    const entry = (entryLow + entryHigh) / 2, risk = Math.max(entry - stop, atr * 0.25), target1 = entry + risk, target2 = entry + risk * 2;
-    const pullback = last.close >= entryLow && last.close <= entryHigh && last.rsi14 >= 30 && last.rsi14 <= 60 && improving;
-    const status = breakout ? '突破量價條件符合（以最近日 K 計算）' : pullback ? '回測支撐觀察區，等待轉強確認' : last.close > entryHigh ? '現價高於觀察區，避免追價' : score >= 5 ? '趨勢條件較佳，等待價格進入觀察區' : '條件未齊，列為觀察';
-    return { code: quote.code, name: quote.name, market: quote.market, price: quote.price, date: last.date, turnover: quote.turnover, horizonReturn, score, rsi: last.rsi14, entryLow, entryHigh, stop, target1, target2, support, resistance, status, volumeOK, smaTrend: bullish, improving, breakout, pullback };
-  }));
-  const candidates = results.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []).sort((a, b) => b.score - a.score || b.horizonReturn - a.horizonReturn).slice(0, 10);
-  const data = { configured: true, candidates, horizon, updatedAt: market.updatedAt, warnings: results.some((result) => result.status === 'rejected') ? ['部分 Fugle 歷史資料暫時無法取得'] : [] };
-  screenCache.set(cacheKey, { time: Date.now(), data });
-  return data;
+  const universe = market.quotes.filter((row) => /^\d{4}$/.test(String(row.code)) && !String(row.code).startsWith('0') && Number(row.price) > 0 && Number(row.price) <= priceLimit && Number(row.turnover) >= 30000000 && !/(ETF|基金|存託|權證|牛|熊|期貨|債)/i.test(String(row.name)));
+  if (!universe.length) return { configured: true, status: 'complete', candidates: [], eligibleCount: 0, analyzedCount: 0, horizon, updatedAt: market.updatedAt, message: '目前沒有符合價格及最低成交值條件的上市櫃個股。' };
+  const job = { id: randomUUID(), key, horizon, updatedAt: market.updatedAt, scanned: 0, total: universe.length, status: 'running', startedAt: Date.now() };
+  screenJobs.set(job.id, job); screenJobByKey.set(key, job.id);
+  void runScreenJob(job, universe).catch(() => { job.status = 'failed'; job.error = '分析工作中斷，請稍後重新篩選。'; screenJobByKey.delete(key); });
+  for (const [id, saved] of screenJobs) if (Date.now() - (saved.completedAt || saved.startedAt) > 60 * 60 * 1000) screenJobs.delete(id);
+  return { configured: true, status: 'running', jobId: job.id, scanned: 0, total: job.total, updatedAt: market.updatedAt };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -307,6 +343,15 @@ const server = http.createServer(async (req, res) => {
       if (!(priceLimit === Infinity || Number.isFinite(priceLimit) && priceLimit > 0 && priceLimit <= 1000000)) return send(res, 400, { error: '請輸入有效的每股價格上限，或選擇不限。' });
       if (![5, 20].includes(horizon)) return send(res, 400, { error: '持有期間請選一週或一個月。' });
       return send(res, 200, await screenStocks(priceLimit, horizon));
+    }
+    const screenJobMatch = url.pathname.match(/^\/api\/fugle\/screen\/([\w-]+)$/);
+    if (screenJobMatch) {
+      if (!await requireAuthenticatedUser(req, res)) return;
+      const job = screenJobs.get(screenJobMatch[1]);
+      if (!job) return send(res, 404, { error: '掃描工作已失效，請重新篩選。' });
+      if (job.status === 'complete') return send(res, 200, job.data);
+      if (job.status === 'failed') return send(res, 502, { error: job.error || '分析工作中斷，請重新篩選。' });
+      return send(res, 200, { configured: true, status: job.status, jobId: job.id, scanned: job.scanned, total: job.total });
     }
     if (url.pathname === '/api/quotes') return send(res, 200, await quotes());
     if (url.pathname === '/api/fundamentals') {
