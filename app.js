@@ -303,7 +303,7 @@
     if (!Number.isFinite(maxLoss) || maxLoss <= 0) return showToast('請輸入大於 0 的單筆最大可承受虧損。');
     button.disabled = true; button.textContent = '正在篩選…'; $('screenStatus').textContent = '正在讀取公開成交資料，並向 Fugle 查詢候選股歷史日 K…'; $('screenContent').innerHTML = '';
     try {
-      const response = await fetch(`/api/fugle/screen?priceLimit=${encodeURIComponent(priceLimit)}&horizon=${encodeURIComponent(horizon)}`, { cache: 'no-store' }), data = await response.json();
+      const response = await fugleFetch(`/api/fugle/screen?priceLimit=${encodeURIComponent(priceLimit)}&horizon=${encodeURIComponent(horizon)}`), data = await response.json();
       if (!response.ok) throw new Error(data.error || '條件篩選失敗');
       if (!data.configured) throw new Error('尚未設定 Fugle API 金鑰。');
       renderScreenCandidates(data, { budget, maxLoss, unit });
@@ -422,17 +422,27 @@
   $('backupForm').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('backupPassword').value; if (password !== $('backupPasswordConfirm').value) return showToast('兩次輸入的密碼不一致。'); try { const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)), key = await backupKey(password, salt); const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify({ ...state, exportedAt: new Date().toISOString(), schema: 2 }))); const file = { format: 'canggu-encrypted-backup', version: 1, algorithm: 'AES-GCM', kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: 310000 }, salt: toBase64(salt), iv: toBase64(iv), data: toBase64(new Uint8Array(data)) }; downloadJson(file, `藏股加密備份-${isoToday()}.json`); $('backupDialog').close(); $('backupForm').reset(); showToast('加密備份已下載；請妥善保存密碼與檔案。'); } catch { showToast('加密失敗，請使用本機網頁重新操作。'); } });
   $('importPasswordForm').addEventListener('submit', async (event) => { event.preventDefault(); try { const file = pendingEncryptedBackup, key = await backupKey($('importPassword').value, fromBase64(file.salt)); const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromBase64(file.iv) }, key, fromBase64(file.data)); const data = JSON.parse(new TextDecoder().decode(plain)); if (applyBackup(data)) { $('importPasswordDialog').close(); $('importPasswordForm').reset(); pendingEncryptedBackup = null; } } catch { showToast('密碼錯誤或備份檔已損毀，請再試一次。'); } });
   let fugleConfigured = false, trendData = null, heldStockData = null;
+  async function fugleFetch(url) {
+    const { data, error } = await supabaseClient?.auth.getSession() || {};
+    if (error || !data?.session?.access_token) throw new Error('請先登入後再使用 Fugle 行情資料。');
+    return fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${data.session.access_token}` } });
+  }
   async function checkFugleStatus() {
-    try { const response = await fetch('/api/fugle/status', { cache: 'no-store' }), data = await response.json(); fugleConfigured = Boolean(data.configured); $('fugleBadge').textContent = fugleConfigured ? 'Fugle 已設定' : '尚未設定 API 金鑰'; $('fugleBadge').classList.toggle('source-warning', !fugleConfigured); }
+    try { const response = await fugleFetch('/api/fugle/status'), data = await response.json(); fugleConfigured = Boolean(data.configured); $('fugleBadge').textContent = fugleConfigured ? 'Fugle 已設定' : '尚未設定 API 金鑰'; $('fugleBadge').classList.toggle('source-warning', !fugleConfigured); }
     catch { $('fugleBadge').textContent = '連線設定無法讀取'; }
-    if (!fugleConfigured) $('trendStatus').innerHTML = `尚未設定 Fugle API 金鑰。<a href="https://developer.fugle.tw/" target="_blank" rel="noopener noreferrer">前往 Fugle 申請</a>後，將 <code>FUGLE_API_KEY=你的金鑰</code> 存到 Windows 本機檔案 <code>%LOCALAPPDATA%\\Canggu\\config.env</code>，再重新啟動 run_local.bat。不要把金鑰放進 OneDrive 專案資料夾或網頁程式碼。`;
+    if (!fugleConfigured) {
+      const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname) || location.protocol === 'file:';
+      $('trendStatus').innerHTML = isLocal
+        ? `尚未設定 Fugle API 金鑰。<a href="https://developer.fugle.tw/" target="_blank" rel="noopener noreferrer">前往 Fugle 申請</a>後，將 <code>FUGLE_API_KEY=你的金鑰</code> 存到 Windows 本機檔案 <code>%LOCALAPPDATA%\\Canggu\\config.env</code>，再重新啟動 run_local.bat。不要把金鑰放進 OneDrive 專案資料夾或網頁程式碼。`
+        : '網站管理者尚未在伺服器設定 Fugle API 金鑰。金鑰僅應存放在伺服器環境變數，請勿輸入網頁或貼到聊天。';
+    }
   }
   $('loadTrend').addEventListener('click', async () => {
     const symbol = $('trendSymbol').value.trim(), days = $('trendRange').value;
     if (!/^\d{4,6}$/.test(symbol)) return showToast('請輸入 4–6 碼股票代號。');
     $('loadTrend').disabled = true; $('trendStatus').textContent = '正在向 Fugle 讀取歷史日 K…'; $('trendResult').hidden = true;
     try {
-      const response = await fetch(`/api/fugle/trend?symbol=${encodeURIComponent(symbol)}&days=${encodeURIComponent(days)}`, { cache: 'no-store' }), data = await response.json();
+      const response = await fugleFetch(`/api/fugle/trend?symbol=${encodeURIComponent(symbol)}&days=${encodeURIComponent(days)}`), data = await response.json();
       if (!response.ok) throw new Error(data.error || '趨勢資料讀取失敗');
       if (!data.configured) { fugleConfigured = false; $('fugleBadge').textContent = '尚未設定 API 金鑰'; return checkFugleStatus(); }
       if (!data.candles?.length) throw new Error('此股票目前沒有可用的歷史日 K。');
@@ -448,7 +458,7 @@
     const button = $('loadHeldStock'); button.disabled = true; button.textContent = '載入中…'; $('heldStockStatus').textContent = '正在讀取所選股票的歷史日 K…'; $('heldStockResult').hidden = true;
     try {
       const days = $('heldStockRange').value;
-      const response = await fetch(`/api/fugle/trend?symbol=${encodeURIComponent(code)}&days=${encodeURIComponent(days)}`, { cache: 'no-store' }), data = await response.json();
+      const response = await fugleFetch(`/api/fugle/trend?symbol=${encodeURIComponent(code)}&days=${encodeURIComponent(days)}`), data = await response.json();
       if (!response.ok) throw new Error(data.error || '個股資料讀取失敗');
       if (!data.configured) throw new Error('尚未設定 Fugle API 金鑰。請先於本機設定金鑰並重新啟動程式。');
       if (!data.candles?.length) throw new Error('此股票目前沒有可用的歷史日 K。');

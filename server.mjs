@@ -119,6 +119,32 @@ async function fugleTrend(symbol, days) {
   const candles = withIndicators((Array.isArray(payload.data) ? payload.data : []).filter((row) => Number.isFinite(Number(row.close))).sort((a, b) => String(a.date).localeCompare(String(b.date))));
   return { configured: true, symbol, market: payload.market || payload.exchange || '', timeframe: payload.timeframe || 'D', candles, source: 'Fugle 歷史日 K', updatedAt: new Date().toISOString() };
 }
+async function requireAuthenticatedUser(req, res) {
+  const token = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
+  if (!token || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    send(res, 401, { error: '請先登入後再使用 Fugle 資料。' });
+    return null;
+  }
+  try {
+    const response = await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/auth/v1/user`, {
+      signal: AbortSignal.timeout(10000),
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` }
+    });
+    if (!response.ok) {
+      send(res, 401, { error: '登入狀態已失效，請重新登入。' });
+      return null;
+    }
+    const user = await response.json();
+    if (!user?.id) {
+      send(res, 401, { error: '無法確認登入帳號，請重新登入。' });
+      return null;
+    }
+    return user;
+  } catch {
+    send(res, 503, { error: '暫時無法驗證登入狀態，請稍後再試。' });
+    return null;
+  }
+}
 const screenCache = new Map();
 async function screenStocks(priceLimit, horizon) {
   if (!FUGLE_API_KEY) return { configured: false };
@@ -155,8 +181,12 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     if (url.pathname === '/api/sync/config') return send(res, 200, { configured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY), production: process.env.NODE_ENV === 'production', url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
-    if (url.pathname === '/api/fugle/status') return send(res, 200, { configured: Boolean(FUGLE_API_KEY) });
+    if (url.pathname === '/api/fugle/status') {
+      if (!await requireAuthenticatedUser(req, res)) return;
+      return send(res, 200, { configured: Boolean(FUGLE_API_KEY) });
+    }
     if (url.pathname === '/api/fugle/trend') {
+      if (!await requireAuthenticatedUser(req, res)) return;
       const symbol = String(url.searchParams.get('symbol') || '').trim();
       const days = Number(url.searchParams.get('days') || 90);
       if (!/^\d{4,6}$/.test(symbol)) return send(res, 400, { error: '請輸入 4–6 碼股票代號。' });
@@ -164,6 +194,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, await fugleTrend(symbol, days));
     }
     if (url.pathname === '/api/fugle/screen') {
+      if (!await requireAuthenticatedUser(req, res)) return;
       const priceLimit = Number(url.searchParams.get('priceLimit')), horizon = Number(url.searchParams.get('horizon'));
       if (!Number.isFinite(priceLimit) || priceLimit <= 0 || priceLimit > 1000000) return send(res, 400, { error: '請輸入有效的每股價格上限。' });
       if (![5, 20].includes(horizon)) return send(res, 400, { error: '持有期間請選一週或一個月。' });
