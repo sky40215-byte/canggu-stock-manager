@@ -2,7 +2,7 @@
   'use strict';
   const STORAGE_KEY = 'canggu.v1.portfolio';
   const $ = (id) => document.getElementById(id);
-  const initialState = { holdings: [], observations: [], transactions: [], alerts: [], journal: [], watchlist: [] };
+  const initialState = { holdings: [], observations: [], transactions: [], alerts: [], journal: [], watchlist: [], watchlistGroups: {}, events: [], settings: { eyeComfort: false } };
   const hadLocalState = localStorage.getItem(STORAGE_KEY) !== null;
   let state = loadState();
   let quoteMap = new Map();
@@ -14,7 +14,7 @@
     try {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (!parsed || !Array.isArray(parsed.holdings) || !Array.isArray(parsed.observations)) return structuredClone(initialState);
-      return { ...initialState, ...parsed, transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [], alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [], journal: Array.isArray(parsed.journal) ? parsed.journal : [], watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : [] };
+      return { ...initialState, ...parsed, transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [], alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [], journal: Array.isArray(parsed.journal) ? parsed.journal : [], watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : [], watchlistGroups: parsed.watchlistGroups && typeof parsed.watchlistGroups === 'object' && !Array.isArray(parsed.watchlistGroups) ? parsed.watchlistGroups : {}, events: Array.isArray(parsed.events) ? parsed.events : [], settings: parsed.settings && typeof parsed.settings === 'object' ? { ...initialState.settings, ...parsed.settings } : { ...initialState.settings } };
     } catch { return structuredClone(initialState); }
   }
   function persist() {
@@ -26,7 +26,7 @@
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     catch { showToast('瀏覽器儲存空間不足，請先匯出備份。'); }
   }
-  function hasPortfolioContent(value) { return ['holdings','observations','transactions','alerts','journal','watchlist'].some((key) => Array.isArray(value?.[key]) && value[key].length > 0); }
+  function hasPortfolioContent(value) { return ['holdings','observations','transactions','alerts','journal','watchlist','events'].some((key) => Array.isArray(value?.[key]) && value[key].length > 0); }
   function stableSerialize(value) {
     if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
     if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
@@ -34,7 +34,7 @@
   }
   function normalizePortfolio(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return structuredClone(initialState);
-    return Object.fromEntries(Object.keys(initialState).map((key) => [key, Array.isArray(value[key]) ? value[key] : []]));
+    return { ...Object.fromEntries(['holdings','observations','transactions','alerts','journal','watchlist','events'].map((key) => [key, Array.isArray(value[key]) ? value[key] : []])), watchlistGroups: value.watchlistGroups && typeof value.watchlistGroups === 'object' && !Array.isArray(value.watchlistGroups) ? value.watchlistGroups : {}, settings: value.settings && typeof value.settings === 'object' ? { ...initialState.settings, ...value.settings } : { ...initialState.settings } };
   }
   function showAccountGate(message = '') {
     $('accountGate').hidden = false; $('appShell').hidden = true; $('logoutBtn').hidden = true;
@@ -182,7 +182,7 @@
     renderInsights();
     renderTrend();
     renderLedger(); renderAllocation(); renderAlerts(); renderJournal();
-    renderStockWatchlist();
+    renderStockWatchlist(); renderEvents(); applyEyeComfort();
   }
   function quoteChangePct(quote) { const price = num(quote.price), change = Number(quote.change); return price - change > 0 && Number.isFinite(change) ? change / (price - change) * 100 : null; }
   function renderStockQuote(quote) {
@@ -193,10 +193,13 @@
   function renderStockWatchlist() {
     $('watchlistCount').textContent = `${state.watchlist.length} 檔`;
     if (!state.watchlist.length) { $('stockWatchlist').innerHTML = '<div class="stock-watch-empty">還沒有待觀察股票。查詢個股後按「加入自選」。</div>'; return; }
-    $('stockWatchlist').innerHTML = state.watchlist.map((code) => {
+    const selectedGroup = $('watchlistGroupFilter').value || 'all', visibleCodes = state.watchlist.filter((code) => selectedGroup === 'all' || (state.watchlistGroups[code] || '觀察中') === selectedGroup);
+    if (!visibleCodes.length) { $('stockWatchlist').innerHTML = '<div class="stock-watch-empty">這個分組目前沒有股票。</div>'; return; }
+    $('stockWatchlist').innerHTML = visibleCodes.map((code) => {
       const quote = quoteMap.get(String(code)), change = quote ? Number(quote.change) : NaN, changePct = quote ? quoteChangePct(quote) : null;
       const name = quote?.name || '行情更新後顯示名稱', date = quote?.date || '尚無最新行情';
-      return `<article class="stock-watch-row"><div class="stock-watch-main"><b>${esc(code)} ${esc(name)}</b><small>${esc(quote?.market || '台股')} · ${esc(date)}${quote?.turnover != null ? ` · 成交值 ${money(quote.turnover)}` : ''}</small></div><div class="stock-watch-price">${quote ? money(quote.price) : '—'}<small class="${change < 0 ? 'negative' : 'positive'}">${quote && Number.isFinite(change) ? `${change > 0 ? '+' : ''}${change.toFixed(2)}${changePct == null ? '' : `（${pct(changePct)}）`}` : '尚無行情'}</small></div><div class="stock-watch-actions"><button class="secondary-button" type="button" data-stock-analyze="${esc(code)}">技術分析</button><button class="secondary-button" type="button" data-watch-remove="${esc(code)}">移除</button></div></article>`;
+      const group = state.watchlistGroups[code] || '觀察中';
+      return `<article class="stock-watch-row"><div class="stock-watch-main"><b>${esc(code)} ${esc(name)}</b><small>${esc(quote?.market || '台股')} · ${esc(date)}${quote?.turnover != null ? ` · 成交值 ${money(quote.turnover)}` : ''}</small></div><div class="stock-watch-price">${quote ? money(quote.price) : '—'}<small class="${change < 0 ? 'negative' : 'positive'}">${quote && Number.isFinite(change) ? `${change > 0 ? '+' : ''}${change.toFixed(2)}${changePct == null ? '' : `（${pct(changePct)}）`}` : '尚無行情'}</small></div><label class="watch-group-picker"><span class="sr-only">${esc(code)} 分組</span><select data-watch-group="${esc(code)}" aria-label="${esc(code)} 分組"><option${group === '觀察中' ? ' selected' : ''}>觀察中</option><option${group === '準備買進' ? ' selected' : ''}>準備買進</option><option${group === '長期追蹤' ? ' selected' : ''}>長期追蹤</option></select></label><div class="stock-watch-actions"><button class="secondary-button" type="button" data-stock-analyze="${esc(code)}">技術分析</button><button class="secondary-button" type="button" data-watch-remove="${esc(code)}">移除</button></div></article>`;
     }).join('');
   }
   function lookupQuotes(query) {
@@ -354,14 +357,16 @@
   });
   $('stockLookupResult').addEventListener('click', (event) => {
     const add = event.target.closest('[data-watch-add]'), analyze = event.target.closest('[data-stock-analyze]');
-    if (add && !state.watchlist.includes(add.dataset.watchAdd)) { state.watchlist.push(add.dataset.watchAdd); persist(); renderStockWatchlist(); showStockLookup($('stockLookupInput').value); showToast('已加入待觀察股票。'); }
+    if (add && !state.watchlist.includes(add.dataset.watchAdd)) { state.watchlist.push(add.dataset.watchAdd); state.watchlistGroups[add.dataset.watchAdd] = '觀察中'; persist(); renderStockWatchlist(); showStockLookup($('stockLookupInput').value); showToast('已加入「觀察中」分組。'); }
     if (analyze) openStockAnalysis(analyze.dataset.stockAnalyze);
   });
   $('stockWatchlist').addEventListener('click', (event) => {
     const remove = event.target.closest('[data-watch-remove]'), analyze = event.target.closest('[data-stock-analyze]');
-    if (remove) { state.watchlist = state.watchlist.filter((code) => code !== remove.dataset.watchRemove); persist(); renderStockWatchlist(); if ($('stockLookupInput').value.trim()) showStockLookup($('stockLookupInput').value); showToast('已從待觀察清單移除。'); }
+    if (remove) { state.watchlist = state.watchlist.filter((code) => code !== remove.dataset.watchRemove); delete state.watchlistGroups[remove.dataset.watchRemove]; persist(); renderStockWatchlist(); if ($('stockLookupInput').value.trim()) showStockLookup($('stockLookupInput').value); showToast('已從待觀察清單移除。'); }
     if (analyze) openStockAnalysis(analyze.dataset.stockAnalyze);
   });
+  $('stockWatchlist').addEventListener('change', (event) => { const select = event.target.closest('[data-watch-group]'); if (!select) return; state.watchlistGroups[select.dataset.watchGroup] = select.value; persist(); renderStockWatchlist(); showToast(`已移至「${select.value}」分組。`); });
+  $('watchlistGroupFilter').addEventListener('change', renderStockWatchlist);
   $('refreshQuotes').addEventListener('click', refreshQuotes);
   $('refreshCandidates').addEventListener('click', refreshQuotes);
   $('refreshNews').addEventListener('click', refreshNews);
@@ -416,6 +421,10 @@
   $('addAlert').addEventListener('click', () => { $('alertForm').reset(); if (state.holdings.length === 1) $('alertStock').value = state.holdings[0].name; $('alertDialog').showModal(); });
   $('alertForm').addEventListener('submit', (event) => { event.preventDefault(); const stock = $('alertStock').value.trim(), target = num($('alertTarget').value); if (!stock || target <= 0) return showToast('請輸入股票和有效目標價。'); state.alerts.push({ id: crypto.randomUUID(), stock, direction: $('alertDirection').value, target, active: true, createdAt: isoToday() }); persist(); renderAlerts(); $('alertDialog').close(); showToast('價格提醒已儲存於此裝置。'); });
   $('alertsContent').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-alert]'); if (button) { state.alerts = state.alerts.filter((row) => row.id !== button.dataset.deleteAlert); persist(); renderAlerts(); } });
+  $('addEvent').addEventListener('click', () => { $('eventForm').reset(); $('eventDate').value = isoToday(); if (state.holdings.length === 1) $('eventStock').value = state.holdings[0].name; $('eventDialog').showModal(); });
+  $('eventForm').addEventListener('submit', (event) => { event.preventDefault(); const row = { id: crypto.randomUUID(), title: $('eventTitle').value.trim(), type: $('eventType').value, date: $('eventDate').value, stock: $('eventStock').value.trim(), note: $('eventNoteInput').value.trim() }; if (!row.title || !row.date) return showToast('請輸入事件名稱和日期。'); state.events.push(row); persist(); renderEvents(); $('eventDialog').close(); showToast('公司事件已儲存並加入同步。'); });
+  $('eventsContent').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-event]'); if (!button) return; state.events = state.events.filter((row) => row.id !== button.dataset.deleteEvent); persist(); renderEvents(); showToast('事件已刪除。'); });
+  $('eyeModeToggle').addEventListener('click', () => { state.settings.eyeComfort = !state.settings.eyeComfort; applyEyeComfort(); persist(); showToast(state.settings.eyeComfort ? '已切換暖色護眼配色。' : '已切回標準配色。'); });
   $('addJournal').addEventListener('click', () => { $('journalForm').reset(); $('journalDialog').showModal(); });
   $('journalForm').addEventListener('submit', (event) => { event.preventDefault(); state.journal.unshift({ id: crypto.randomUUID(), title: $('journalTitle').value.trim(), stock: $('journalStock').value.trim(), thesis: $('journalThesis').value.trim(), risk: $('journalRisk').value.trim(), reviewDate: $('journalReviewDate').value, createdAt: isoToday(), done: false }); persist(); renderJournal(); $('journalDialog').close(); showToast('投資日誌已儲存於此裝置。'); });
   $('journalContent').addEventListener('click', (event) => { const done = event.target.closest('[data-complete-journal]'), remove = event.target.closest('[data-delete-journal]'); if (done) { const row = state.journal.find((item) => item.id === done.dataset.completeJournal); if (row) row.done = !row.done; persist(); renderJournal(); } if (remove) { state.journal = state.journal.filter((item) => item.id !== remove.dataset.deleteJournal); persist(); renderJournal(); } });
@@ -576,7 +585,7 @@
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', references: '研究資料' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', references: '研究資料' };
   function showPage(page, updateHash = false) {
     if (!pageTitles[page]) page = 'overview';
     const mainSections = [...document.querySelectorAll('.main-content > section')];
@@ -603,12 +612,44 @@
   function renderAlerts() { $('alertsContent').innerHTML = state.alerts.length ? [...state.alerts].reverse().map((row) => `<article class="record-card"><div><b>${esc(row.stock)} · ${row.direction === 'above' ? '到達／高於' : '到達／低於'} ${money(row.target)}</b><p>${row.active ? '等待行情觸發' : `已於 ${esc(row.triggeredAt || '')} 觸發，當時 ${money(row.triggeredPrice)}`}</p></div><button class="row-action" data-delete-alert="${esc(row.id)}" title="刪除提醒">×</button></article>`).join('') : '<div class="feature-empty">尚未設定價格提醒。</div>'; }
   function evaluateAlerts() { let changed = false, triggered = []; state.alerts.forEach((row) => { if (!row.active) return; const price = quoteMap.get(stockCode(row.stock))?.price; if (price == null) return; if ((row.direction === 'above' && price >= row.target) || (row.direction === 'below' && price <= row.target)) { row.active = false; row.triggeredAt = isoToday(); row.triggeredPrice = price; triggered.push(row.stock); changed = true; } }); if (changed) { persist(); renderAlerts(); showToast(`價格提醒觸發：${triggered.join('、')}`); } }
   function renderJournal() { $('journalContent').innerHTML = state.journal.length ? state.journal.map((row) => `<article class="record-card journal-card ${row.done ? 'is-done' : ''}"><div><b>${esc(row.title)}${row.stock ? ` · ${esc(row.stock)}` : ''}</b><p>${esc(row.thesis)}</p>${row.risk ? `<small>風險／失效條件：${esc(row.risk)}</small>` : ''}<small>建立 ${esc(row.createdAt)}${row.reviewDate ? ` · 預計回顧 ${esc(row.reviewDate)}` : ''}</small></div><div class="record-actions"><button class="secondary-button" data-complete-journal="${esc(row.id)}">${row.done ? '取消完成' : '標記完成'}</button><button class="row-action" data-delete-journal="${esc(row.id)}" title="刪除日誌">×</button></div></article>`).join('') : '<div class="feature-empty">尚未建立投資日誌。</div>'; }
+  function renderEvents() {
+    const today = isoToday(), events = [...state.events].filter((row) => row.date && row.title).sort((a, b) => {
+      const aUpcoming = a.date >= today, bUpcoming = b.date >= today;
+      return aUpcoming !== bUpcoming ? (aUpcoming ? -1 : 1) : aUpcoming ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date);
+    });
+    if (!events.length) { $('eventsContent').innerHTML = '<div class="feature-empty">還沒有已排定的事件。新增法說會、除權息或自己的追蹤日期。</div>'; return; }
+    $('eventsContent').innerHTML = events.map((row) => {
+      const dayDelta = Math.round((new Date(`${row.date}T00:00:00`) - new Date(`${isoToday()}T00:00:00`)) / 86400000);
+      const timing = dayDelta < 0 ? `已過 ${Math.abs(dayDelta)} 天` : dayDelta === 0 ? '今天' : dayDelta === 1 ? '明天' : `${dayDelta} 天後`;
+      return `<article class="event-row"><div class="event-date"><b>${esc(row.date.slice(5).replace('-', '/'))}</b><small>${esc(row.date.slice(0, 4))}</small></div><div class="event-main"><div class="event-title-line"><b>${esc(row.title)}</b><span class="event-type">${esc(row.type || '自訂')}</span></div><small>${row.stock ? `${esc(row.stock)} · ` : ''}${esc(row.note || '未填備註')}</small></div><span class="event-countdown ${dayDelta < 0 ? 'event-past' : ''}">${timing}</span><button class="row-action" type="button" data-delete-event="${esc(row.id)}" aria-label="刪除 ${esc(row.title)}">×</button></article>`;
+    }).join('');
+  }
+  function applyEyeComfort() {
+    const enabled = Boolean(state.settings?.eyeComfort);
+    document.body.dataset.eyeComfort = enabled ? 'true' : 'false';
+    const button = $('eyeModeToggle');
+    if (button) { button.setAttribute('aria-pressed', String(enabled)); button.textContent = enabled ? '☀ 標準模式' : '☾ 護眼模式'; button.title = enabled ? '切換回標準配色' : '切換到暖色護眼配色'; }
+  }
   async function backupKey(password, salt) { const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']); return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt','decrypt']); }
   function toBase64(bytes) { let binary = ''; bytes.forEach((byte) => binary += String.fromCharCode(byte)); return btoa(binary); }
   function fromBase64(value) { return Uint8Array.from(atob(value), (char) => char.charCodeAt(0)); }
   function downloadJson(data, name) { const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
-  function applyBackup(data) { if (!Array.isArray(data.holdings) || !Array.isArray(data.observations)) throw new Error('格式不符'); if (!confirm('匯入備份會取代此瀏覽器目前的所有資料，確定繼續？')) return false; state = { ...initialState, ...data, holdings: data.holdings, observations: data.observations, transactions: Array.isArray(data.transactions) ? data.transactions : [], alerts: Array.isArray(data.alerts) ? data.alerts : [], journal: Array.isArray(data.journal) ? data.journal : [], watchlist: Array.isArray(data.watchlist) ? data.watchlist : [] }; persist(); render(); showToast('備份已匯入。'); return true; }
+  function applyBackup(data) { if (!Array.isArray(data.holdings) || !Array.isArray(data.observations)) throw new Error('格式不符'); if (!confirm('匯入備份會取代此瀏覽器目前的所有資料，確定繼續？')) return false; state = normalizePortfolio(data); persist(); render(); showToast('備份已匯入。'); return true; }
   if (state.holdings.length && stockCode(state.holdings[0].name)) $('trendSymbol').value = stockCode(state.holdings[0].name);
+  let installPromptEvent = null;
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault(); installPromptEvent = event; $('installAppBtn').hidden = false;
+  });
+  $('installAppBtn').addEventListener('click', async () => {
+    if (!installPromptEvent) return;
+    installPromptEvent.prompt();
+    await installPromptEvent.userChoice;
+    installPromptEvent = null; $('installAppBtn').hidden = true;
+  });
+  window.addEventListener('appinstalled', () => { installPromptEvent = null; $('installAppBtn').hidden = true; });
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost','127.0.0.1'].includes(location.hostname))) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
   render();
   showPage(location.hash.slice(1) || 'overview');
   initAccountSync();

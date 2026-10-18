@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "藏股｜個人股票管理",
+  "short_name": "藏股",
+  "description": "個人持股、交易紀錄、自選股與公司事件管理",
+  "lang": "zh-TW",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#eef3f5",
+  "theme_color": "#14394e",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -16,7 +16,7 @@ const PORT = Number(process.env.CANGGU_PORT || process.env.PORT || 4174);
 const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 function send(res, status, data, type = 'application/json; charset=utf-8') {
   res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -214,7 +214,7 @@ const server = http.createServer(async (req, res) => {
     }
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = resolve(ROOT, `.${requested}`);
-    if (!file.startsWith(ROOT + sep) || !['.html', '.css', '.js'].includes(extname(file))) return send(res, 404, { error: '找不到檔案。' });
+    if (!file.startsWith(ROOT + sep) || !['.html', '.css', '.js', '.webmanifest', '.svg', '.png'].includes(extname(file))) return send(res, 404, { error: '找不到檔案。' });
     const body = await readFile(file);
     return send(res, 200, body, MIME[extname(file)] || 'application/octet-stream');
   } catch (error) {
