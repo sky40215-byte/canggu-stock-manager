@@ -3,8 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
-const LOCAL_CONFIG_PATH = process.env.CANGGU_CONFIG_PATH || resolve(process.env.LOCALAPPDATA || ROOT, 'Canggu', 'config.env');
+const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
+const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
+const FRONTEND_ROOT = resolve(PROJECT_ROOT, 'frontend');
+const LOCAL_CONFIG_PATH = process.env.CANGGU_CONFIG_PATH || resolve(process.env.LOCALAPPDATA || PROJECT_ROOT, 'Canggu', 'config.env');
 try {
   const localEnv = await readFile(LOCAL_CONFIG_PATH, 'utf8');
   for (const line of localEnv.split(/\r?\n/)) {
@@ -16,6 +18,7 @@ const PORT = Number(process.env.CANGGU_PORT || process.env.PORT || 4174);
 const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const fundamentalsCache = new Map();
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 function send(res, status, data, type = 'application/json; charset=utf-8') {
@@ -48,6 +51,45 @@ async function fetchJson(url) {
   const response = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'CangguPersonalStockApp/1.0' } });
   if (!response.ok) throw new Error(`資料來源回應 ${response.status}`);
   return response.json();
+}
+async function finMindDataset(dataset, symbol, startDate) {
+  const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate });
+  const payload = await fetchJson(`https://api.finmindtrade.com/api/v4/data?${params}`);
+  if (payload.status !== 200 || !Array.isArray(payload.data)) throw new Error(payload.msg || 'FinMind 暫時無法提供資料。');
+  return payload.data;
+}
+async function fundamentals(symbol) {
+  const cached = fundamentalsCache.get(symbol);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+  const start = new Date(); start.setDate(start.getDate() - 450);
+  const startDate = start.toISOString().slice(0, 10);
+  const [valuationRows, revenueRows] = await Promise.all([
+    finMindDataset('TaiwanStockPER', symbol, startDate),
+    finMindDataset('TaiwanStockMonthRevenue', symbol, startDate)
+  ]);
+  const valuation = valuationRows.filter((row) => row.date).sort((a, b) => String(b.date).localeCompare(String(a.date)))[0] || null;
+  const metricNumber = (raw) => raw == null || String(raw).trim() === '' || /^n\/a$/i.test(String(raw).trim()) ? null : Number.isFinite(Number(raw)) ? Number(raw) : null;
+  const byMonth = new Map(revenueRows.map((row) => [`${row.revenue_year}-${String(row.revenue_month).padStart(2, '0')}`, row]));
+  const revenue = [...byMonth.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([month, row]) => {
+    const priorMonth = `${Number(row.revenue_year) - 1}-${String(row.revenue_month).padStart(2, '0')}`;
+    const prior = byMonth.get(priorMonth), amount = metricNumber(row.revenue), previous = metricNumber(prior?.revenue);
+    return { month, amount, yearOverYear: amount !== null && previous !== null && previous !== 0 ? (amount / previous - 1) * 100 : null };
+  });
+  const data = {
+    symbol,
+    valuation: valuation ? {
+      date: valuation.date,
+      per: metricNumber(valuation.PER),
+      dividendYield: metricNumber(valuation.dividend_yield),
+      pbr: metricNumber(valuation.PBR)
+    } : null,
+    revenue,
+    source: 'FinMind 免費台股資料',
+    updatedAt: new Date().toISOString()
+  };
+  fundamentalsCache.set(symbol, { data, expiresAt: Date.now() + 30 * 60 * 1000 });
+  if (fundamentalsCache.size > 200) fundamentalsCache.delete(fundamentalsCache.keys().next().value);
+  return data;
 }
 async function quotes() {
   const sources = [
@@ -201,6 +243,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, await screenStocks(priceLimit, horizon));
     }
     if (url.pathname === '/api/quotes') return send(res, 200, await quotes());
+    if (url.pathname === '/api/fundamentals') {
+      const symbol = String(url.searchParams.get('symbol') || '').trim();
+      if (!/^\d{4,6}$/.test(symbol)) return send(res, 400, { error: '請輸入 4–6 碼股票代號。' });
+      return send(res, 200, await fundamentals(symbol));
+    }
     if (url.pathname === '/api/news') {
       const stocks = JSON.parse(url.searchParams.get('stocks') || '[]');
       const keyword = String(url.searchParams.get('keyword') || '').replace(/[<>\r\n]/g, ' ').trim().slice(0, 80);
@@ -213,8 +260,8 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, await news(feed));
     }
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
-    const file = resolve(ROOT, `.${requested}`);
-    if (!file.startsWith(ROOT + sep) || !['.html', '.css', '.js', '.webmanifest', '.svg', '.png'].includes(extname(file))) return send(res, 404, { error: '找不到檔案。' });
+    const file = resolve(FRONTEND_ROOT, `.${requested}`);
+    if (!file.startsWith(FRONTEND_ROOT + sep) || !['.html', '.css', '.js', '.webmanifest', '.svg', '.png'].includes(extname(file))) return send(res, 404, { error: '找不到檔案。' });
     const body = await readFile(file);
     return send(res, 200, body, MIME[extname(file)] || 'application/octet-stream');
   } catch (error) {

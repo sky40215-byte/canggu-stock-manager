@@ -12,5 +12,5 @@ if errorlevel 2 (
   exit /b 2
 )
 if not errorlevel 1 exit /b 0
-node server.mjs
+node backend\server.mjs
 if errorlevel 1 pause

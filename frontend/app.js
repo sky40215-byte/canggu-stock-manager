@@ -188,7 +188,23 @@
   function renderStockQuote(quote) {
     const code = String(quote.code), change = Number(quote.change), changePct = quoteChangePct(quote), watched = state.watchlist.includes(code);
     const newsUrl = `https://news.google.com/search?q=${encodeURIComponent(`"${code}" "${quote.name}"`)}&hl=zh-TW&gl=TW`;
-    return `<article class="stock-quote-card"><div class="stock-quote-title"><b>${esc(code)} ${esc(quote.name)}</b><small>${esc(quote.market || '台股')} · ${esc(quote.date || '最近交易日')}${quote.turnover != null ? ` · 成交值 ${money(quote.turnover)}` : ''}</small></div><div class="stock-quote-value">${money(quote.price)}<small class="${change < 0 ? 'negative' : 'positive'}">${Number.isFinite(change) ? `${change > 0 ? '+' : ''}${change.toFixed(2)}${changePct == null ? '' : `（${pct(changePct)}）`}` : '漲跌資料暫缺'}</small></div><div class="stock-quote-actions"><button type="button" class="secondary-button" data-stock-analyze="${esc(code)}">技術分析</button><button type="button" class="${watched ? 'secondary-button' : 'primary-button'}" data-watch-add="${esc(code)}" ${watched ? 'disabled' : ''}>${watched ? '已加入自選' : '＋ 加入自選'}</button><a class="candidate-links" href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a></div></article>`;
+    return `<article class="stock-quote-card"><div class="stock-quote-title"><b>${esc(code)} ${esc(quote.name)}</b><small>${esc(quote.market || '台股')} · ${esc(quote.date || '最近交易日')}${quote.turnover != null ? ` · 成交值 ${money(quote.turnover)}` : ''}</small></div><div class="stock-quote-value">${money(quote.price)}<small class="${change < 0 ? 'negative' : 'positive'}">${Number.isFinite(change) ? `${change > 0 ? '+' : ''}${change.toFixed(2)}${changePct == null ? '' : `（${pct(changePct)}）`}` : '漲跌資料暫缺'}</small></div><div class="stock-quote-actions"><button type="button" class="secondary-button" data-fundamentals="${esc(code)}">載入基本面</button><button type="button" class="secondary-button" data-stock-analyze="${esc(code)}">技術分析</button><button type="button" class="${watched ? 'secondary-button' : 'primary-button'}" data-watch-add="${esc(code)}" ${watched ? 'disabled' : ''}>${watched ? '已加入自選' : '＋ 加入自選'}</button><a class="candidate-links" href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a></div><div class="stock-fundamentals" data-fundamentals-panel="${esc(code)}" hidden></div></article>`;
+  }
+  async function loadFundamentals(symbol, button) {
+    const panel = [...document.querySelectorAll('[data-fundamentals-panel]')].find((item) => item.dataset.fundamentalsPanel === symbol);
+    if (!panel) return;
+    button.disabled = true; button.textContent = '載入中…'; panel.hidden = false; panel.innerHTML = '<span class="feature-empty">正在載入基本面與營收資料…</span>';
+    try {
+      const response = await fetch(`/api/fundamentals?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' }), data = await response.json();
+      if (!response.ok) throw new Error(data.error || '基本面資料讀取失敗。');
+      const valuation = data.valuation;
+      const metric = (label, value, suffix = '') => `<div><small>${label}</small><b>${value == null ? '—' : `${Number(value).toFixed(2)}${suffix}`}</b></div>`;
+      const rows = [...data.revenue].reverse().map((row) => `<tr><td>${esc(row.month)}</td><td>${row.amount == null ? '—' : `${(row.amount / 100000000).toFixed(2)} 億`}</td><td class="${row.yearOverYear == null ? '' : row.yearOverYear < 0 ? 'negative' : 'positive'}">${row.yearOverYear == null ? '—' : `${row.yearOverYear > 0 ? '+' : ''}${row.yearOverYear.toFixed(2)}%`}</td></tr>`).join('');
+      panel.innerHTML = `<div class="fundamentals-heading"><b>免費台股基本面</b><small>估值日期：${esc(valuation?.date || '暫無資料')}</small></div><div class="fundamentals-metrics">${metric('本益比', valuation?.per, ' 倍')}${metric('殖利率', valuation?.dividendYield, '%')}${metric('股價淨值比', valuation?.pbr, ' 倍')}</div><div class="fundamentals-revenue"><b>近 12 個月營收</b><div class="fundamentals-table-wrap"><table><thead><tr><th>月份</th><th>營收</th><th>年增率</th></tr></thead><tbody>${rows || '<tr><td colspan="3">暫無營收資料</td></tr>'}</tbody></table></div></div><small class="fundamentals-source">資料來源：FinMind · ${esc(data.updatedAt.slice(0, 10))} 更新；估值為資料來源最近提供日期。</small>`;
+      button.textContent = '更新基本面';
+    } catch (error) {
+      panel.innerHTML = `<span class="feature-empty">${esc(error.message)}</span>`; button.textContent = '重試基本面';
+    } finally { button.disabled = false; }
   }
   function renderStockWatchlist() {
     $('watchlistCount').textContent = `${state.watchlist.length} 檔`;
@@ -356,9 +372,10 @@
     showStockLookup(query);
   });
   $('stockLookupResult').addEventListener('click', (event) => {
-    const add = event.target.closest('[data-watch-add]'), analyze = event.target.closest('[data-stock-analyze]');
+    const add = event.target.closest('[data-watch-add]'), analyze = event.target.closest('[data-stock-analyze]'), fundamental = event.target.closest('[data-fundamentals]');
     if (add && !state.watchlist.includes(add.dataset.watchAdd)) { state.watchlist.push(add.dataset.watchAdd); state.watchlistGroups[add.dataset.watchAdd] = '觀察中'; persist(); renderStockWatchlist(); showStockLookup($('stockLookupInput').value); showToast('已加入「觀察中」分組。'); }
     if (analyze) openStockAnalysis(analyze.dataset.stockAnalyze);
+    if (fundamental) loadFundamentals(fundamental.dataset.fundamentals, fundamental);
   });
   $('stockWatchlist').addEventListener('click', (event) => {
     const remove = event.target.closest('[data-watch-remove]'), analyze = event.target.closest('[data-stock-analyze]');

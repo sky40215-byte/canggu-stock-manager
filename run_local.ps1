@@ -19,4 +19,4 @@ if ($listener) {
     Read-Host '按 Enter 關閉'
     exit 2
 }
-node server.mjs
+node backend/server.mjs

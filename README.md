@@ -2,9 +2,17 @@
 
 在 Windows 上雙擊 `run_local.bat`，再於瀏覽器開啟 `http://127.0.0.1:4174`。需安裝 Node.js 18 或更新版本；不需安裝套件或登入。
 
+## 專案資料夾
+
+- `frontend/`：網頁介面、樣式、前端程式、PWA manifest、Service Worker 與圖示。
+- `backend/`：Node.js API 伺服器。
+- `database/`：Supabase 資料表與 RLS SQL。
+- `config/`：環境變數範本；實際 API 金鑰仍放在 Windows 的 `%LOCALAPPDATA%\Canggu\config.env`。
+- 根目錄：本機啟動腳本、`package.json`、Render 部署設定與本說明。
+
 ## 公開部署（GitHub + Render）
 
-此專案含 Node.js API，不能只用 GitHub Pages。先建立 Supabase 專案，於 SQL Editor 執行 `supabase/schema.sql` 建立雲端資料表與 Row Level Security（RLS）規則，再在 Authentication 啟用 Email/Password 登入，並把 Supabase 的 Site URL／允許導向網址設為 Render 網站網址。將程式推送到 GitHub 後，在 Render 選擇 **New + → Blueprint** 並連接此儲存庫；建立服務時填入 `SUPABASE_URL` 與 `SUPABASE_ANON_KEY`。只使用公開 anon/publishable key；絕不可把 `service_role` 或 secret key 放進程式碼或環境變數供前端讀取。正式環境未設定 Supabase 時，系統會鎖住介面不顯示資料。
+此專案含 Node.js API，不能只用 GitHub Pages。先建立 Supabase 專案，於 SQL Editor 執行 `database/schema.sql` 建立雲端資料表與 Row Level Security（RLS）規則，再在 Authentication 啟用 Email/Password 登入，並把 Supabase 的 Site URL／允許導向網址設為 Render 網站網址。將程式推送到 GitHub 後，在 Render 選擇 **New + → Blueprint** 並連接此儲存庫；建立服務時填入 `SUPABASE_URL` 與 `SUPABASE_ANON_KEY`。只使用公開 anon/publishable key；絕不可把 `service_role` 或 secret key 放進程式碼或環境變數供前端讀取。正式環境未設定 Supabase 時，系統會鎖住介面不顯示資料。
 
 每個人用自己的電子郵件與密碼建立帳號。第一次登入會把目前瀏覽器的資料同步到雲端；另一台裝置登入同一帳號後會讀取同一份資料。當裝置本機與雲端都有不同資料時，登入時會先詢問要保留哪一邊。RLS 依登入帳號限制資料列，使用者只能讀寫自己的資料。請使用 HTTPS 網址並定期下載加密備份。
 
@@ -21,6 +29,7 @@
 - 建立投資日誌，記下理由、風險與回顧日期。
 - 從證交所與櫃買中心官方開放資料更新最近交易日收盤行情。
 - 依股票代號或名稱查詢上市、上櫃股票與 ETF 行情，並建立可分組的自選觀察清單。
+- 個股查詢可載入 FinMind 免費台股基本面資料，包括本益比、殖利率、股價淨值比及近 12 個月營收年增率。
 - 依持倉比重、最近交易日波動及未實現損益提供研究待辦與風險檢視；門檻為通用提示，不是個人化買賣建議。
 - 新聞標題提供原始連結、來源網站入口與 Google News 備用搜尋連結；搜尋後可開啟完整新聞結果。
 - 依官方最近交易日漲幅整理研究候選股號，提供相關新聞與公開資訊觀測站公告入口。
@@ -39,6 +48,8 @@
 未設定雲端同步時，持倉、交易、提醒、日誌、事件及自選股只存在此瀏覽器的 `localStorage`。設定 Supabase 後，登入帳號會將這些資料及護眼模式設定同步到 Supabase 的 `portfolio_data`，並以 RLS 限制每個帳號只能存取自己的資料；瀏覽器仍保留本機副本。加密備份在瀏覽器內以 PBKDF2 衍生金鑰及 AES-GCM 加密；請另外保存備份密碼，忘記密碼無法還原。雲端同步與加密備份是不同功能。
 
 更新行情時，本機服務向證交所與櫃買中心請求公開市場資料；搜尋新聞時，所選股票代號／名稱與你輸入的關鍵字會送至 Google News RSS。Google 會看到查詢內容與你的網路連線資訊。公告連結只有在你點選後才開啟公開資訊觀測站。
+
+在個股查詢中按「載入基本面」時，所選股票代號會由伺服器送至 FinMind，讀取估值與月營收資料；不會送出持倉股數、成本或損益。伺服器會快取結果 30 分鐘以減少重複請求。資料可用性及更新時間依 FinMind 來源為準。
 
 官方開放行情是最新可得交易日的日收盤資料，並非盤中即時報價；非交易日或官方資料更新前會顯示最近交易日。盤中即時報價需接有授權的行情服務。本機服務不會儲存行情或新聞資料。雲端同步設定完成後，登入同一帳號的裝置會互相同步；未設定同步時，瀏覽器資料清除或切換裝置不會自動轉移，請定期下載加密備份。
 
