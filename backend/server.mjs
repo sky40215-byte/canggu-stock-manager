@@ -242,7 +242,7 @@ async function screenStocks(priceLimit, horizon) {
   const cacheKey = `${priceLimit}:${horizon}`, cached = screenCache.get(cacheKey);
   if (cached && Date.now() - cached.time < 180000) return cached.data;
   const market = await quotes();
-  const universe = market.quotes.filter((row) => /^\d{4}$/.test(String(row.code)) && !String(row.code).startsWith('0') && Number(row.price) > 0 && Number(row.price) <= priceLimit && Number(row.turnover) >= 30000000 && !/(ETF|基金|存託|權證|牛|熊|期貨|債)/i.test(String(row.name))).sort((a, b) => Number(b.turnover) - Number(a.turnover)).slice(0, 6);
+  const universe = market.quotes.filter((row) => /^\d{4}$/.test(String(row.code)) && !String(row.code).startsWith('0') && Number(row.price) > 0 && Number(row.price) <= priceLimit && Number(row.turnover) >= 30000000 && !/(ETF|基金|存託|權證|牛|熊|期貨|債)/i.test(String(row.name))).sort((a, b) => Number(b.turnover) - Number(a.turnover)).slice(0, 12);
   if (!universe.length) return { configured: true, candidates: [], updatedAt: market.updatedAt, message: '價格上限內沒有符合成交值篩選的個股；可提高每股價格上限後再試。' };
   const results = await Promise.allSettled(universe.map(async (quote) => {
     const trend = await fugleTrend(String(quote.code), 90), candles = trend.candles;
@@ -262,7 +262,7 @@ async function screenStocks(priceLimit, horizon) {
     const status = breakout ? '突破量價條件符合（以最近日 K 計算）' : pullback ? '回測支撐觀察區，等待轉強確認' : last.close > entryHigh ? '現價高於觀察區，避免追價' : score >= 5 ? '趨勢條件較佳，等待價格進入觀察區' : '條件未齊，列為觀察';
     return { code: quote.code, name: quote.name, market: quote.market, price: quote.price, date: last.date, turnover: quote.turnover, horizonReturn, score, rsi: last.rsi14, entryLow, entryHigh, stop, target1, target2, support, resistance, status, volumeOK, smaTrend: bullish, improving, breakout, pullback };
   }));
-  const candidates = results.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []).sort((a, b) => b.score - a.score || b.horizonReturn - a.horizonReturn).slice(0, 5);
+  const candidates = results.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []).sort((a, b) => b.score - a.score || b.horizonReturn - a.horizonReturn).slice(0, 10);
   const data = { configured: true, candidates, horizon, updatedAt: market.updatedAt, warnings: results.some((result) => result.status === 'rejected') ? ['部分 Fugle 歷史資料暫時無法取得'] : [] };
   screenCache.set(cacheKey, { time: Date.now(), data });
   return data;
@@ -303,8 +303,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/fugle/screen') {
       if (!await requireAuthenticatedUser(req, res)) return;
-      const priceLimit = Number(url.searchParams.get('priceLimit')), horizon = Number(url.searchParams.get('horizon'));
-      if (!Number.isFinite(priceLimit) || priceLimit <= 0 || priceLimit > 1000000) return send(res, 400, { error: '請輸入有效的每股價格上限。' });
+      const priceLimitValue = url.searchParams.get('priceLimit'), priceLimit = priceLimitValue === 'unlimited' ? Infinity : Number(priceLimitValue), horizon = Number(url.searchParams.get('horizon'));
+      if (!(priceLimit === Infinity || Number.isFinite(priceLimit) && priceLimit > 0 && priceLimit <= 1000000)) return send(res, 400, { error: '請輸入有效的每股價格上限，或選擇不限。' });
       if (![5, 20].includes(horizon)) return send(res, 400, { error: '持有期間請選一週或一個月。' });
       return send(res, 200, await screenStocks(priceLimit, horizon));
     }
