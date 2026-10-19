@@ -230,7 +230,7 @@ async function askGemini(messages, topic) {
     method: 'POST', signal: AbortSignal.timeout(30000),
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: `你是藏股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。${topicInstruction}` }] },
+      systemInstruction: { parts: [{ text: `你是端股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。${topicInstruction}` }] },
       contents: messages.map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
       generationConfig: { maxOutputTokens: 900, temperature: 0.5 }
     })
@@ -381,6 +381,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, process.env.HOST || '127.0.0.1', () => {
-  console.log(`藏股已啟動：http://127.0.0.1:${PORT}`);
+  console.log(`端股已啟動：http://127.0.0.1:${PORT}`);
   console.log('伺服器只監聽本機；行情與新聞查詢會向對應外部資料來源送出股票名稱或代號。');
 });

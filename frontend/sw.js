@@ -1,4 +1,4 @@
-const CACHE_NAME = 'canggu-app-shell-v4';
+const CACHE_NAME = 'canggu-app-shell-v5';
 const APP_SHELL = [
   '/',
   '/index.html',
