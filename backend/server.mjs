@@ -18,6 +18,10 @@ try {
 const PORT = Number(process.env.CANGGU_PORT || process.env.PORT || 4174);
 const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
+const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3';
+const OLLAMA_PROXY_TOKEN = process.env.OLLAMA_PROXY_TOKEN || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const fundamentalsCache = new Map();
@@ -224,13 +228,16 @@ const assistantTopics = {
   holdingAnalysis: '我的持股分析', stockDesk: '個股查詢／自選', candidates: '候選股篩選', watchlist: '價格觀察紀錄',
   news: '新聞與公司公告', references: '研究來源與文獻'
 };
-async function askGemini(messages, topic) {
+function assistantSystemPrompt(topic) {
   const topicInstruction = topic === '一般問題' ? '' : `使用者選擇的網站主題是「${topic}」。請將回答聚焦於此功能及其相關概念；你只收到主題名稱，沒有讀取該頁或其中的個人資料。`;
+  return `你是端股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。${topicInstruction}`;
+}
+async function askGemini(messages, topic) {
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
     method: 'POST', signal: AbortSignal.timeout(30000),
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: `你是端股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可聲稱即時行情或保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。${topicInstruction}` }] },
+      systemInstruction: { parts: [{ text: assistantSystemPrompt(topic) }] },
       contents: messages.map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
       generationConfig: { maxOutputTokens: 900, temperature: 0.5 }
     })
@@ -243,6 +250,34 @@ async function askGemini(messages, topic) {
   const answer = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim();
   if (!answer) throw Object.assign(new Error('助理沒有產生回答，請換個方式提問。'), { status: 502 });
   return answer;
+}
+async function askOllama(messages, topic) {
+  let response;
+  try {
+    response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST', signal: AbortSignal.timeout(120000),
+      headers: {
+  'Content-Type': 'application/json',
+  ...(OLLAMA_PROXY_TOKEN ? { Authorization: `Bearer ${OLLAMA_PROXY_TOKEN}` } : {})
+},
+      body: JSON.stringify({ model: OLLAMA_MODEL, stream: false, messages: [
+        { role: 'system', content: assistantSystemPrompt(topic) },
+        ...messages.map(({ role, content }) => ({ role, content }))
+      ] })
+    });
+  } catch {
+    throw Object.assign(new Error('無法連線到 Ollama。請確認 Ollama 已啟動、模型已下載，且 OLLAMA_BASE_URL 設定正確。'), { status: 503 });
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error || 'Ollama 暫時無法回答，請確認模型名稱與服務狀態。'), { status: 502 });
+  const answer = data.message?.content?.trim();
+  if (!answer) throw Object.assign(new Error('Ollama 沒有產生回答，請換個方式提問。'), { status: 502 });
+  return answer;
+}
+async function askAssistant(messages, topic) {
+  if (AI_PROVIDER === 'ollama') return askOllama(messages, topic);
+  if (AI_PROVIDER === 'gemini' && GEMINI_API_KEY) return askGemini(messages, topic);
+  throw Object.assign(new Error('助理尚未完成設定。請管理者設定 AI_PROVIDER 與對應服務。'), { status: 503 });
 }
 const screenCache = new Map(), screenJobs = new Map(), screenJobByKey = new Map();
 function analyzeScreenCandles(quote, candles, horizon) {
@@ -308,14 +343,18 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     if (url.pathname === '/api/sync/config') return send(res, 200, { configured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY), production: process.env.NODE_ENV === 'production', url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
-    if (url.pathname === '/api/assistant/status') return send(res, 200, { configured: Boolean(GEMINI_API_KEY) });
+    if (url.pathname === '/api/assistant/status') return send(res, 200, {
+      configured: AI_PROVIDER === 'ollama' || (AI_PROVIDER === 'gemini' && Boolean(GEMINI_API_KEY)),
+      provider: AI_PROVIDER === 'ollama' ? 'ollama' : AI_PROVIDER === 'gemini' ? 'gemini' : 'unknown',
+      model: AI_PROVIDER === 'ollama' ? OLLAMA_MODEL : 'Gemini'
+    });
     if (url.pathname === '/api/assistant' && req.method === 'POST') {
       let user = null;
       if (process.env.NODE_ENV === 'production' || SUPABASE_URL) {
         user = await requireAuthenticatedUser(req, res);
         if (!user) return;
       }
-      if (!GEMINI_API_KEY) return send(res, 503, { error: '助理尚未設定 Gemini API 金鑰。' });
+      if (AI_PROVIDER !== 'ollama' && !(AI_PROVIDER === 'gemini' && GEMINI_API_KEY)) return send(res, 503, { error: '助理尚未完成設定。請管理者設定 AI_PROVIDER 與對應服務。' });
       const rateKey = user?.id || req.socket.remoteAddress || 'local';
       if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時最多詢問 20 次，請稍後再試。' });
       const body = await readJsonBody(req);
@@ -323,7 +362,7 @@ const server = http.createServer(async (req, res) => {
       if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 10) return send(res, 400, { error: '對話訊息數量不正確。' });
       const messages = body.messages.map((item) => ({ role: item?.role, content: typeof item?.content === 'string' ? item.content.trim() : '' }));
       if (messages.some((item) => !['user', 'assistant'].includes(item.role) || !item.content || item.content.length > 2000) || messages.at(-1)?.role !== 'user') return send(res, 400, { error: '每則訊息需在 2,000 字內，且最新訊息必須是你的提問。' });
-      return send(res, 200, { answer: await askGemini(messages, topic) });
+      return send(res, 200, { answer: await askAssistant(messages, topic) });
     }
     if (url.pathname === '/api/fugle/status') {
       if (!await requireAuthenticatedUser(req, res)) return;

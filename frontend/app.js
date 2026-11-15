@@ -487,9 +487,19 @@
   async function checkAssistantStatus() {
     try {
       const response = await fetch('/api/assistant/status', { cache: 'no-store' }), data = await response.json();
-      $('assistantBadge').textContent = data.configured ? 'Gemini 已設定' : '尚未設定助理';
+      const providerName = data.provider === 'ollama' ? `Ollama · ${data.model}` : 'Gemini';
+      $('assistantBadge').textContent = data.configured ? `${providerName} 已設定` : '尚未設定助理';
       $('assistantBadge').classList.toggle('source-warning', !data.configured);
-      if (!data.configured) $('assistantStatus').textContent = '管理者尚未設定 GEMINI_API_KEY。請在 Google AI Studio 建立金鑰，再加入 Render 環境變數或本機 %LOCALAPPDATA%\\Canggu\\config.env。';
+      const privacy = document.querySelector('.assistant-privacy p');
+      const consent = document.querySelector('.assistant-consent');
+      if (data.provider === 'ollama') {
+        if (privacy) privacy.textContent = '只有勾選同意並送出後，所選主題、問題和最近 10 則對話才會送到已設定的 Ollama 服務。持倉、成本、損益與登入資料不會自動傳送；若 Ollama 在本機執行，提問會由本機 Ollama 模型處理。對話只保留在目前頁面，不會存入帳號或瀏覽器。';
+        if (consent) consent.lastChild.textContent = '我已閱讀，並同意將本次主題、問題與近期對話傳送給已設定的 Ollama 服務';
+      } else {
+        if (privacy) privacy.textContent = '只有勾選同意並送出後，所選主題、問題和最近 10 則對話才會交給 Google Gemini 回答。持倉、成本、損益與登入資料不會自動傳送；請勿輸入帳號密碼、API 金鑰或不願交給 Google 的個人資料。Gemini 免費方案可能使用提示和回答改善 Google 產品。對話只保留在目前頁面，不會存入帳號或瀏覽器。';
+        if (consent) consent.lastChild.textContent = '我已閱讀，並同意將本次主題、問題與近期對話傳送給 Google Gemini';
+      }
+      if (!data.configured) $('assistantStatus').textContent = '尚未設定助理服務。請在伺服器設定 AI_PROVIDER=ollama 與 Ollama 模型，或設定 Gemini API 金鑰。';
     } catch { $('assistantBadge').textContent = '助理設定無法讀取'; $('assistantStatus').textContent = '目前無法連線到助理設定，請重新整理後再試。'; }
   }
   $('assistantForm').addEventListener('submit', async (event) => {
