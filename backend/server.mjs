@@ -17,6 +17,7 @@ try {
 } catch { /* Local AppData config is optional; environment variables also work. */ }
 const PORT = Number(process.env.CANGGU_PORT || process.env.PORT || 4174);
 const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
+const FINMIND_TOKEN = process.env.FINMIND_TOKEN || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
@@ -55,14 +56,20 @@ function normalize(row, market) {
   const date = rocDate(value(row, ['Date', '日期', '交易日期']));
   return { code, name, price, change: Number.isFinite(changeRaw) ? changeRaw : null, turnover: Number.isFinite(turnover) ? turnover : null, date, market };
 }
-async function fetchJson(url) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'CangguPersonalStockApp/1.0' } });
-  if (!response.ok) throw new Error(`資料來源回應 ${response.status}`);
+async function fetchJson(url, extraHeaders = {}) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'CangguPersonalStockApp/1.0', ...extraHeaders } });
+  if (!response.ok) throw Object.assign(new Error(`資料來源回應 ${response.status}`), { status: response.status });
   return response.json();
 }
 async function finMindDataset(dataset, symbol, startDate) {
-  const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate });
-  const payload = await fetchJson(`https://api.finmindtrade.com/api/v4/data?${params}`);
+  const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate, ...(FINMIND_TOKEN ? { token: FINMIND_TOKEN } : {}) });
+  let payload;
+  try {
+    payload = await fetchJson(`https://api.finmindtrade.com/api/v4/data?${params}`);
+  } catch (error) {
+    if (error?.status === 402) throw Object.assign(new Error('FinMind API 使用額度已達上限（402）。請設定 FINMIND_TOKEN 或稍後再試。'), { status: 502 });
+    throw error;
+  }
   if (payload.status !== 200 || !Array.isArray(payload.data)) throw new Error(payload.msg || 'FinMind 暫時無法提供資料。');
   return payload.data;
 }
@@ -256,11 +263,100 @@ const assistantTopics = {
   news: '新聞與公司公告', references: '研究來源與文獻'
 };
 function assistantSystemPrompt(topic, marketContext = '') {
-  const topicInstruction = topic === '一般問題' ? '' : `使用者選擇的網站主題是「${topic}」。請將回答聚焦於此功能及其相關概念；你只收到主題名稱，沒有讀取該頁或其中的個人資料。`;
+  const topicInstruction = topic === '一般問題' ? '' : topic === '加碼試算'
+    ? '本次是加碼試算。使用者明確提供的平均成本、持股數和預算可用於解釋試算結果；先照提供的計算值說明，不要重新計算或改動股數。若有近 20 個交易日高低價與 ATR，另列歷史價格觀察範圍並解釋其限制；歷史區間不是建議進場價。趨勢只作一般研究參考，不可建議使用者一定加碼，也不可把技術區間當成個人化買賣指令。'
+    : `使用者選擇的網站主題是「${topic}」。請將回答聚焦於此功能及其相關概念；你只收到主題名稱，沒有讀取該頁或其中的個人資料。`;
   const marketInstruction = marketContext
-    ? `\n以下是使用者指定股票的 Fugle 行情資料：\n${marketContext}\n請註明這是查詢當下的行情，並依資料回答；不要自行補猜缺漏數字，也不要把分析說成確定的買賣指令。`
+    ? `\n以下是本次由伺服器查詢的 Fugle 行情與日 K 技術摘要：\n${marketContext}\n回答股票相關問題時，請以這份資料為主要依據，並明確標示報價時間、歷史 K 線日期與來源。請用繁體中文、短句和下列結構回答：\n1. 行情摘要：價格、漲跌和資料時間。\n2. 趨勢判讀：給出偏多／中性／偏弱的研究傾向，並列出均線、RSI、MACD、區間及成交量中實際有提供的指標。\n3. 條件式觀察：說明偏多、轉弱或盤整時可觀察的條件；若使用者詢問進出場，可用資料中的近 20 日高低與 ATR 作為歷史觀察區間，清楚說明觸發條件，不得稱為精確或保證的買賣價。\n4. 主要風險與下一步核對事項。\n只引用資料中確實存在的數字；缺漏請寫「資料不足」。不要捏造財報、新聞、法人籌碼或未提供的行情。不可聲稱看到了使用者持倉，也不可給保證獲利或要求立即買賣的指令。`
     : '';
-  return `你是端股台股管理系統內的繁體中文助理。回答清楚、實用並標示資料限制；可協助解釋股票、財報、投資概念及本系統功能。不可保證報酬，不得替使用者下個人化買賣指令；討論投資時應說明風險、資料日期與需要自行核對的部分。你沒有取得使用者的持倉、帳戶或即時資料，除非本次請求附有行情資料或使用者在問題中自行提供。避免要求密碼、API 金鑰等機密。${topicInstruction}${marketInstruction}`;
+  return `你是端股內的台股研究助理，使用繁體中文，先給簡短結論，再用清楚標題和條列列出依據。區分「資料事實」與「推論」，說明資料日期及限制。可以提供一般投資研究參考、風險情境與查證方向，但不可保證報酬、假裝掌握未提供資料，或把回答寫成適合此使用者的確定買賣命令。除本次附帶的行情資料和使用者本次自行提供的內容外，你沒有取得使用者的持倉、帳戶或其他頁面資訊。缺資料就直接說明，不要猜測；勿索取密碼或 API 金鑰。請以一般讀者看得懂的繁體中文輸出，不要使用 Markdown 星號、井字號或 LaTeX；計算請寫成白話算式，例如「67 股 × NT$68.2／股 = 約 NT$4,569.40」，並解釋數字代表什麼。${topicInstruction}${marketInstruction}`;
+}
+function assistantMarketSummary(symbol, quote, trend) {
+  const round = (raw, digits = 2) => {
+    if (raw == null || raw === '') return null;
+    const number = Number(raw);
+    return Number.isFinite(number) ? Number(number.toFixed(digits)) : null;
+  };
+  const candles = trend?.candles || [];
+  const last = candles.at(-1), previous = candles.at(-2);
+  const recent = candles.slice(-20);
+  const closeReturn = (count) => {
+    const first = candles.at(-(count + 1));
+    return first?.close > 0 && last?.close > 0 ? round((last.close / first.close - 1) * 100) : null;
+  };
+  const ranges = candles.slice(-14).map((row, index, rows) => {
+    const previousRow = candles[candles.length - rows.length + index - 1];
+    const high = Number(row.high), low = Number(row.low), priorClose = Number(previousRow?.close);
+    return Number.isFinite(high) && Number.isFinite(low)
+      ? Number.isFinite(priorClose) ? Math.max(high - low, Math.abs(high - priorClose), Math.abs(low - priorClose)) : high - low
+      : null;
+  }).filter(Number.isFinite);
+  const atr14 = ranges.length ? round(average(ranges)) : null;
+  const dailyVolumes = recent.map((row) => Number(row.volume)).filter(Number.isFinite);
+  const latestVolume = Number(last?.volume);
+  const quoteTime = Number(quote.lastUpdated);
+  const quoteUpdatedAt = Number.isFinite(quoteTime) && quoteTime > 0
+    ? new Date(quoteTime / 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
+    : 'Fugle 未提供更新時間';
+  const quoteData = {
+    source: 'Fugle 即時報價 API（依方案可能為延遲或最近成交資料）',
+    symbol: quote.symbol || symbol,
+    name: quote.name || '',
+    market: quote.market || quote.exchange || '',
+    quoteUpdatedAt,
+    quoteDate: quote.date || null,
+    lastPrice: round(quote.lastPrice ?? quote.closePrice),
+    priceType: quote.lastPrice == null ? '無最後成交價時以 Fugle 收盤價欄位作參考' : '最後成交價（含試撮）',
+    change: round(quote.change),
+    changePercent: round(quote.changePercent),
+    previousClose: round(quote.previousClose),
+    openPrice: round(quote.openPrice),
+    highPrice: round(quote.highPrice),
+    lowPrice: round(quote.lowPrice),
+    averagePrice: round(quote.avgPrice),
+    intradayTradeVolume: round(quote.total?.tradeVolume, 0)
+  };
+  const technicalData = last ? {
+    source: trend.source || 'Fugle 歷史日 K',
+    period: `${candles.length} 個交易日`,
+    lastCandleDate: last.date || null,
+    lastDailyClose: round(last.close),
+    return20TradingDaysPct: closeReturn(20),
+    return60TradingDaysPct: closeReturn(60),
+    sma20: round(last.sma20),
+    sma60: round(last.sma60),
+    rsi14: round(last.rsi14, 1),
+    macdHistogram: round(last.macdHistogram, 4),
+    macdHistogramImproving: last.macdHistogram != null && previous?.macdHistogram != null && Number.isFinite(Number(last.macdHistogram)) && Number.isFinite(Number(previous.macdHistogram))
+      ? Number(last.macdHistogram) > Number(previous.macdHistogram)
+      : null,
+    latestDailyVolume: Number.isFinite(latestVolume) ? round(latestVolume, 0) : null,
+    averageDailyVolume20: dailyVolumes.length ? round(average(dailyVolumes), 0) : null,
+    recent20TradingDayLow: (() => { const values = recent.map((row) => Number(row.low)).filter(Number.isFinite); return values.length ? round(Math.min(...values)) : null; })(),
+    recent20TradingDayHigh: (() => { const values = recent.map((row) => Number(row.high)).filter(Number.isFinite); return values.length ? round(Math.max(...values)) : null; })(),
+    atr14,
+    disclaimer: '均線、指標、區間與波動值是由歷史日 K 計算的研究參考，不代表未來走勢。'
+  } : { source: 'Fugle 歷史日 K', unavailable: true, reason: trend?.error || '本次未取得足夠歷史 K 線；僅有報價資料，不能據此判讀中短期趨勢。' };
+  return JSON.stringify({ quote: quoteData, technical: technicalData });
+}
+function fugleAssistantAnswer(marketContext) {
+  const { quote, technical } = JSON.parse(marketContext);
+  const lines = [`${quote.name ? `${quote.name}（${quote.symbol}）` : quote.symbol}｜Fugle 行情與技術摘要`,
+    `報價：NT$ ${quote.lastPrice ?? '資料不足'}；${quote.change == null ? '漲跌資料不足' : `漲跌 ${quote.change >= 0 ? '+' : ''}${quote.change}（${quote.changePercent ?? '—'}%）`}；${quote.quoteUpdatedAt}。${quote.priceType ? `價格類型：${quote.priceType}。` : ''}`];
+  if (technical.unavailable) {
+    lines.push(`歷史日 K：${technical.reason || '目前無法取得'}。`, '目前只能參考報價，無法判讀中短期趨勢。');
+  } else {
+    const trend = Number.isFinite(technical.sma20) && Number.isFinite(technical.sma60)
+      ? technical.lastDailyClose > technical.sma20 && technical.sma20 > technical.sma60 ? '偏多（收盤高於 20 日均線，且 20 日均線高於 60 日均線）'
+        : technical.lastDailyClose < technical.sma20 && technical.sma20 < technical.sma60 ? '偏弱（收盤低於 20 日均線，且 20 日均線低於 60 日均線）'
+          : '中性或均線交錯'
+      : '資料不足，無法判斷均線趨勢';
+    lines.push(`趨勢參考：${trend}。日 K 截至 ${technical.lastCandleDate || '日期未提供'}（${technical.period}）。`);
+    lines.push(`技術數據：RSI(14) ${technical.rsi14 ?? '不足'}；MACD 柱體 ${technical.macdHistogram ?? '不足'}${technical.macdHistogramImproving == null ? '' : technical.macdHistogramImproving ? '（較前一日改善）' : '（較前一日轉弱）'}；20 日區間 NT$ ${technical.recent20TradingDayLow ?? '不足'}–${technical.recent20TradingDayHigh ?? '不足'}；ATR(14) ${technical.atr14 ?? '不足'}。`);
+    if (technical.return20TradingDaysPct != null) lines.push(`近 20 個交易日漲跌幅：${technical.return20TradingDaysPct >= 0 ? '+' : ''}${technical.return20TradingDaysPct}%。`);
+  }
+  lines.push('解讀方式：這是依 Fugle 報價及歷史日 K 數值整理的固定摘要，並非 AI 對話；資料可能延遲，也不構成個人化買賣建議。');
+  return lines.join('\n');
 }
 async function askGemini(messages, topic, marketContext = '') {
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
@@ -293,7 +389,7 @@ async function askOllama(messages, topic, marketContext = '') {
       body: JSON.stringify({ model: OLLAMA_MODEL, stream: false, messages: [
         { role: 'system', content: assistantSystemPrompt(topic, marketContext) },
         ...messages.map(({ role, content }) => ({ role, content }))
-      ] })
+      ], options: { temperature: 0.25, num_predict: 700 } })
     });
   } catch {
     throw Object.assign(new Error('無法連線到 Ollama。請確認 Ollama 已啟動、模型已下載，且 OLLAMA_BASE_URL 設定正確。'), { status: 503 });
@@ -304,9 +400,15 @@ async function askOllama(messages, topic, marketContext = '') {
   if (!answer) throw Object.assign(new Error('Ollama 沒有產生回答，請換個方式提問。'), { status: 502 });
   return answer;
 }
-async function askAssistant(messages, topic, marketContext = '') {
-  if (AI_PROVIDER === 'ollama') return askOllama(messages, topic, marketContext);
-  if (AI_PROVIDER === 'gemini' && GEMINI_API_KEY) return askGemini(messages, topic, marketContext);
+function aiProviderConfigured(provider) {
+  if (provider === 'fugle') return Boolean(FUGLE_API_KEY);
+  if (provider === 'ollama') return Boolean(process.env.OLLAMA_BASE_URL || AI_PROVIDER === 'ollama');
+  if (provider === 'gemini') return Boolean(GEMINI_API_KEY);
+  return false;
+}
+async function askAssistant(messages, topic, marketContext = '', provider = AI_PROVIDER) {
+  if (provider === 'ollama' && aiProviderConfigured(provider)) return askOllama(messages, topic, marketContext);
+  if (provider === 'gemini' && aiProviderConfigured(provider)) return askGemini(messages, topic, marketContext);
   throw Object.assign(new Error('助理尚未完成設定。請管理者設定 AI_PROVIDER 與對應服務。'), { status: 503 });
 }
 const screenCache = new Map(), screenJobs = new Map(), screenJobByKey = new Map();
@@ -374,9 +476,11 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
     if (url.pathname === '/api/sync/config') return send(res, 200, { configured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY), production: process.env.NODE_ENV === 'production', url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY });
     if (url.pathname === '/api/assistant/status') return send(res, 200, {
-      configured: AI_PROVIDER === 'ollama' || (AI_PROVIDER === 'gemini' && Boolean(GEMINI_API_KEY)),
+      configured: aiProviderConfigured(AI_PROVIDER),
       provider: AI_PROVIDER === 'ollama' ? 'ollama' : AI_PROVIDER === 'gemini' ? 'gemini' : 'unknown',
-      model: AI_PROVIDER === 'ollama' ? OLLAMA_MODEL : 'Gemini'
+      model: AI_PROVIDER === 'ollama' ? OLLAMA_MODEL : 'Gemini',
+      ollamaModel: OLLAMA_MODEL,
+      providers: { fugle: aiProviderConfigured('fugle'), ollama: aiProviderConfigured('ollama'), gemini: aiProviderConfigured('gemini') }
     });
     if (url.pathname === '/api/assistant' && req.method === 'POST') {
       let user = null;
@@ -384,34 +488,127 @@ const server = http.createServer(async (req, res) => {
         user = await requireAuthenticatedUser(req, res);
         if (!user) return;
       }
-      if (AI_PROVIDER !== 'ollama' && !(AI_PROVIDER === 'gemini' && GEMINI_API_KEY)) return send(res, 503, { error: '助理尚未完成設定。請管理者設定 AI_PROVIDER 與對應服務。' });
       const rateKey = user?.id || req.socket.remoteAddress || 'local';
       if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時最多詢問 20 次，請稍後再試。' });
       const body = await readJsonBody(req);
+      const provider = body.provider === undefined ? AI_PROVIDER : body.provider;
+      if (!['fugle', 'ollama', 'gemini'].includes(provider)) return send(res, 400, { error: '請選擇可用的助理服務。' });
+      if (!aiProviderConfigured(provider)) return send(res, 503, { error: provider === 'fugle' ? 'Fugle 尚未設定 API 金鑰。' : provider === 'gemini' ? 'Gemini 尚未設定 API 金鑰，請選擇已設定的服務。' : 'Ollama 尚未設定服務網址，請選擇已設定的服務。' });
       const topic = assistantTopics[body.topic] || '一般問題';
+      const symbol = String(body.symbol || '').trim();
+      if (symbol && !/^\d{4,6}$/.test(symbol)) return send(res, 400, { error: '股票代號請輸入 4–6 位數字。' });
+      if (provider === 'fugle') {
+        if (!symbol) return send(res, 400, { error: '使用 Fugle 行情摘要時，請先填入股票代號。' });
+        const quote = await fugleIntradayQuote(symbol);
+        let trend = null;
+        try { trend = await fugleTrend(symbol, 150); }
+        catch (error) { trend = { error: error.message || 'Fugle 歷史日 K 暫時無法取得。' }; }
+        return send(res, 200, { answer: fugleAssistantAnswer(assistantMarketSummary(symbol, quote, trend)), provider });
+      }
       if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 10) return send(res, 400, { error: '對話訊息數量不正確。' });
       const messages = body.messages.map((item) => ({ role: item?.role, content: typeof item?.content === 'string' ? item.content.trim() : '' }));
       if (messages.some((item) => !['user', 'assistant'].includes(item.role) || !item.content || item.content.length > 2000) || messages.at(-1)?.role !== 'user') return send(res, 400, { error: '每則訊息需在 2,000 字內，且最新訊息必須是你的提問。' });
-      const symbol = String(body.symbol || '').trim();
-      if (symbol && !/^\d{4,6}$/.test(symbol)) return send(res, 400, { error: '股票代號請輸入 4–6 位數字。' });
       let marketContext = '';
       if (symbol) {
         const quote = await fugleIntradayQuote(symbol);
-        const sourceTime = Number(quote.lastUpdated);
-        const updatedAt = Number.isFinite(sourceTime) && sourceTime > 0
-          ? new Date(sourceTime / 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
-          : 'Fugle 未提供更新時間';
-        marketContext = JSON.stringify({
-          source: 'Fugle 即時報價', symbol: quote.symbol || symbol, name: quote.name || '',
-          market: quote.market || quote.exchange || '', date: quote.date || '', updatedAt,
-          lastPrice: quote.lastPrice ?? null, change: quote.change ?? null,
-          changePercent: quote.changePercent ?? null, previousClose: quote.previousClose ?? null,
-          openPrice: quote.openPrice ?? null, highPrice: quote.highPrice ?? null,
-          lowPrice: quote.lowPrice ?? null, avgPrice: quote.avgPrice ?? null,
-          tradeVolume: quote.total?.tradeVolume ?? null
-        });
+        let trend = null;
+        try { trend = await fugleTrend(symbol, 150); }
+        catch (error) { trend = { error: error.message || 'Fugle 歷史日 K 暫時無法取得。' }; }
+        marketContext = assistantMarketSummary(symbol, quote, trend);
       }
-      return send(res, 200, { answer: await askAssistant(messages, topic, marketContext) });
+      return send(res, 200, { answer: await askAssistant(messages, topic, marketContext, provider), provider });
+    }
+    if (url.pathname === '/api/topup/calculate' && req.method === 'POST') {
+      let user = null;
+      if (process.env.NODE_ENV === 'production' || SUPABASE_URL) {
+        user = await requireAuthenticatedUser(req, res);
+        if (!user) return;
+      }
+      const body = await readJsonBody(req);
+      const query = String(body.symbolOrName || '').trim().slice(0, 40);
+      const averageCost = Number(body.averageCost), currentShares = Number(body.currentShares), budget = Number(body.budget);
+      const shareUnit = Number(body.shareUnit), mode = body.mode === 'ollama' ? 'ollama' : body.mode === 'fugle' ? 'fugle' : '';
+      const commissionRatePercent = body.commissionRatePercent === undefined ? 0.1425 : Number(body.commissionRatePercent);
+      const sellTaxRatePercent = body.sellTaxRatePercent === undefined ? 0.3 : Number(body.sellTaxRatePercent);
+      if (!query) return send(res, 400, { error: '請輸入股票代號或完整名稱。' });
+      if (!(averageCost > 0 && averageCost <= 1000000) || !(currentShares > 0 && Number.isInteger(currentShares) && currentShares <= 1000000000) || !(budget > 0 && budget <= 10000000000)) return send(res, 400, { error: '請填入有效的平均成本、整數持股數與加碼預算。' });
+      if (![1, 1000].includes(shareUnit)) return send(res, 400, { error: '股數單位設定不正確。' });
+      if (!Number.isFinite(commissionRatePercent) || commissionRatePercent < 0 || commissionRatePercent > 1 || !Number.isFinite(sellTaxRatePercent) || sellTaxRatePercent < 0 || sellTaxRatePercent > 5) return send(res, 400, { error: '請確認手續費與賣出證交稅率設定。' });
+      if (!mode) return send(res, 400, { error: '請選擇 Fugle 試算或 Ollama 分析。' });
+      if (!FUGLE_API_KEY) return send(res, 503, { error: '尚未設定 Fugle API 金鑰，無法取得目前行情。' });
+      if (mode === 'ollama') {
+        if (body.aiConsent !== true) return send(res, 400, { error: '使用 Ollama 分析前，請先勾選資料傳送同意。' });
+        if (!aiProviderConfigured('ollama')) return send(res, 503, { error: 'Ollama 服務尚未設定。' });
+        const rateKey = user?.id || req.socket.remoteAddress || 'local';
+        if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時助理分析次數已達上限，請稍後再試。' });
+      }
+      let symbol = query, resolvedName = '';
+      if (!/^\d{4,6}$/.test(query)) {
+        const market = await quotes(), normalizedQuery = query.toLocaleLowerCase('zh-TW');
+        const exact = market.quotes.filter((row) => String(row.name).trim().toLocaleLowerCase('zh-TW') === normalizedQuery);
+        const matches = exact.length ? exact : market.quotes.filter((row) => String(row.name).toLocaleLowerCase('zh-TW').includes(normalizedQuery));
+        const unique = [...new Map(matches.map((row) => [String(row.code), row])).values()];
+        if (unique.length !== 1) return send(res, 404, { error: unique.length ? '名稱符合多檔股票，請改輸入股票代號。' : '找不到這個名稱；可輸入完整股票名稱或代號。' });
+        symbol = String(unique[0].code); resolvedName = String(unique[0].name || '');
+      }
+      const quote = await fugleIntradayQuote(symbol);
+      const price = Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose);
+      if (!(price > 0 && Number.isFinite(price))) return send(res, 502, { error: 'Fugle 沒有提供可用價格，請稍後重試。' });
+      const quoteTimestamp = Number(quote.lastUpdated);
+      const quoteUpdatedAt = Number.isFinite(quoteTimestamp) && quoteTimestamp > 0
+        ? new Date(quoteTimestamp / 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
+        : 'Fugle 未提供更新時間';
+      const sharesToBuy = Math.floor(budget / (price * shareUnit)) * shareUnit;
+      const addedCost = sharesToBuy * price;
+      const totalShares = currentShares + sharesToBuy;
+      const totalCost = averageCost * currentShares + addedCost;
+      const commissionRate = commissionRatePercent / 100, sellTaxRate = sellTaxRatePercent / 100;
+      const buyCommission = addedCost * commissionRate;
+      const estimatedSaleValue = price * totalShares;
+      const estimatedSaleCommission = estimatedSaleValue * commissionRate;
+      const estimatedSaleTax = estimatedSaleValue * sellTaxRate;
+      const estimatedTransactionCosts = buyCommission + estimatedSaleCommission + estimatedSaleTax;
+      const estimatedNetPnl = estimatedSaleValue - totalCost - estimatedTransactionCosts;
+      const estimatedBreakEvenPrice = totalShares > 0 && commissionRate + sellTaxRate < 1
+        ? (totalCost + buyCommission) / (totalShares * (1 - commissionRate - sellTaxRate))
+        : null;
+      const result = {
+        symbol: quote.symbol || symbol,
+        name: quote.name || resolvedName,
+        price,
+        priceType: quote.lastPrice == null ? 'Fugle 收盤價／昨收參考' : 'Fugle 最後成交價（含試撮）',
+        quoteDate: quote.date || null,
+        quoteUpdatedAt,
+        averageCost,
+        currentShares,
+        budget,
+        shareUnit,
+        commissionRatePercent,
+        sellTaxRatePercent,
+        sharesToBuy,
+        addedCost,
+        remainingBudget: budget - addedCost,
+        totalShares,
+        newAverageCost: totalShares ? totalCost / totalShares : averageCost,
+        buyCommission,
+        estimatedSaleCommission,
+        estimatedSaleTax,
+        estimatedTransactionCosts,
+        estimatedBreakEvenPrice,
+        projectedUnrealizedPnl: estimatedNetPnl,
+        projectedUnrealizedPnlPercent: totalCost + buyCommission > 0 ? estimatedNetPnl / (totalCost + buyCommission) * 100 : 0,
+        feesAndTaxIncluded: true
+      };
+      if (mode === 'fugle') return send(res, 200, { mode, result });
+      let trend = null;
+      try { trend = await fugleTrend(symbol, 150); }
+      catch (error) { trend = { error: error.message || 'Fugle 歷史日 K 暫時無法取得。' }; }
+      const marketSummary = JSON.parse(assistantMarketSummary(symbol, quote, trend));
+      const context = JSON.stringify({ market: marketSummary, userEnteredCalculation: result });
+      const analysis = await askAssistant([
+        { role: 'user', content: '請用一般讀者看得懂的繁體中文，解釋以下加碼試算和技術趨勢，列出 Fugle 試算價格、若有資料則列出近 20 個交易日的歷史價格區間，並提供偏多、中性或偏弱的研究觀察、需要確認的條件與主要風險。歷史價格區間不可描述成建議進場價。不要把它寫成個人化下單指令。' }
+      ], '加碼試算', context, 'ollama');
+      return send(res, 200, { mode, result, analysis });
     }
     if (url.pathname === '/api/fugle/status') {
       if (!await requireAuthenticatedUser(req, res)) return;
