@@ -449,10 +449,11 @@ async function runScreenJob(job, universe) {
     }
   };
   await Promise.all(Array.from({ length: 5 }, worker));
-  candidates.sort((a, b) => b.priority - a.priority || b.score - a.score || a.zoneDistance - b.zoneDistance || b.horizonReturn - a.horizonReturn || Number(b.turnover) - Number(a.turnover));
-  const data = { configured: true, status: 'complete', candidates: candidates.slice(0, 10), eligibleCount: universe.length, analyzedCount: job.scanned, horizon: job.horizon, updatedAt: job.updatedAt, warnings: failures ? [`${failures} 檔歷史資料無法取得或超出 API 配額`] : [] };
+  candidates.sort((a, b) => b.score - a.score || b.priority - a.priority || a.zoneDistance - b.zoneDistance || b.horizonReturn - a.horizonReturn || Number(b.turnover) - Number(a.turnover));
+  const data = { configured: true, status: 'complete', candidates, eligibleCount: universe.length, analyzedCount: job.scanned, horizon: job.horizon, updatedAt: job.updatedAt, warnings: failures ? [`${failures} 檔歷史資料無法取得或超出 API 配額`] : [] };
   job.status = 'complete'; job.data = data; job.completedAt = Date.now();
   screenCache.set(job.key, { time: Date.now(), data });
+  while (screenCache.size > 3) screenCache.delete(screenCache.keys().next().value);
   screenJobByKey.delete(job.key);
 }
 async function screenStocks(priceLimit, horizon) {

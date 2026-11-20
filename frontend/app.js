@@ -8,6 +8,7 @@
   let quoteMap = new Map();
   let quoteRefreshPromise = null;
   let lastQuoteFetchAt = 0;
+  let screenCandidateResults = null;
   let toastTimer;
   let supabaseClient = null, cloudUser = null, cloudReady = false, cloudSyncEnabled = false, cloudSyncTimer = null, lastCloudUpdatedAt = '';
   let servicesStarted = false, accountMode = 'login';
@@ -308,10 +309,12 @@
       return `<article class="candidate-row"><div class="candidate-stock"><b>${esc(item.code)} ${esc(item.name)}</b><small>${esc(item.market)} · ${esc(item.date || updatedAt.slice(0, 10) || '最近交易日')}${item.turnover != null ? ` · 成交值 ${money(item.turnover)}` : ''}</small></div><div class="candidate-price">${money(item.price)}<small class="positive">+${item.changePct.toFixed(2)}%</small></div><div class="candidate-links"><a href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a><a href="${esc(noticeUrl)}" target="_blank" rel="noopener noreferrer">公司公告 ↗</a></div></article>`;
     }).join('');
   }
-  function renderScreenCandidates(data, sizing) {
-    const container = $('screenContent'), candidates = data.candidates || [];
+  function renderScreenCandidates(data, sizing, page = 1) {
+    const container = $('screenContent'), candidates = data.candidates || [], pageSize = 10;
     if (!candidates.length) { container.innerHTML = `<div class="screen-empty">${esc(data.message || '目前沒有符合條件的候選，試著放寬每股價格上限或稍後再查。')}</div>`; return; }
-    container.innerHTML = `<div class="screen-results-heading"><b>符合行情條件 ${Number(data.eligibleCount ?? candidates.length).toLocaleString('zh-TW')} 檔，顯示優先前 ${candidates.length} 檔</b><span>依買入觀察優先度、技術條件與價格位置排序</span></div>` + candidates.map((item, index) => {
+    const pageCount = Math.ceil(candidates.length / pageSize), currentPage = Math.max(1, Math.min(pageCount, Number(page) || 1)), offset = (currentPage - 1) * pageSize;
+    const shown = candidates.slice(offset, offset + pageSize);
+    container.innerHTML = `<div class="screen-results-heading"><b>符合行情條件 ${Number(data.eligibleCount ?? candidates.length).toLocaleString('zh-TW')} 檔 · 完成評分 ${candidates.length.toLocaleString('zh-TW')} 檔</b><span>依評分由高到低排序 · 每頁 ${pageSize} 檔</span></div>` + shown.map((item, index) => {
       const newsUrl = `https://news.google.com/search?q=${encodeURIComponent(`"${item.code}" "${item.name}"`)}&hl=zh-TW&gl=TW`;
       const noticeUrl = `https://mops.twse.com.tw/mops/web/t05st01?TYPEK=all&co_id=${encodeURIComponent(item.code)}`;
       const entryLow = marketTickPrice(item.entryLow), entryHigh = marketTickPrice(item.entryHigh), stop = marketTickPrice(item.stop), entry = marketTickPrice((entryLow + entryHigh) / 2), riskPerShare = Math.max(0, entry - stop);
@@ -319,9 +322,13 @@
       const invested = unitShares * entry, plannedLoss = unitShares * riskPerShare;
       const target1 = marketTickPrice(item.target1), target2 = marketTickPrice(item.target2), gross1 = unitShares * (target1 - entry), gross2 = unitShares * (target2 - entry);
       const noSharesReason = unitShares ? '' : sizing.budgetUnlimited && sizing.lossUnlimited ? '預算與虧損上限都不限，無法估算股數；請至少設定其中一項。' : sizing.unit === 1000 ? '目前預算或虧損上限不足以估算 1 張（1000 股）' : '目前預算或虧損上限不足以估算 1 股';
-      return `<article class="screen-row"><div class="screen-row-top"><div class="candidate-stock"><b><span class="screen-rank">${index + 1}</span>${esc(item.code)} ${esc(item.name || '')}</b><small>${esc(item.market || '台股')} · 日 K ${esc(item.date || '')} · 成交值 ${money(item.turnover)}</small></div><div class="screen-quote">${money(item.price)}<small class="${item.horizonReturn >= 0 ? 'positive' : 'negative'}">${data.horizon === 5 ? '5 日' : '20 日'} ${pct(item.horizonReturn)}</small></div><span class="screen-score screen-priority-${Number(item.priority) || 0}">${esc(item.priorityLabel || '一般觀察')} · ${item.score} 分</span></div><div class="screen-state">${esc(item.status)}</div><div class="screen-levels"><span>買入觀察區 <b>${marketRefMoney(item.entryLow)} – ${marketRefMoney(item.entryHigh)}</b></span><span>風險失效價 <b>${marketRefMoney(item.stop)}</b></span><span>假設停利 1R / 2R <b>${marketRefMoney(target1)} / ${marketRefMoney(target2)}</b></span></div><div class="screen-sizing"><b>部位試算（假設單檔使用整筆預算）</b><div><span>估算買入 <strong>${unitShares.toLocaleString('zh-TW')} 股</strong></span><span>假設進場均價 <strong>${marketRefMoney(entry)}</strong></span><span>預估投入 <strong>${money(invested)}</strong></span><span>觸及失效價估損 <strong>${money(plannedLoss)}</strong></span><span>全數停利 1R 毛利 <strong>${money(gross1)}</strong></span><span>全數停利 2R 毛利 <strong>${money(gross2)}</strong></span></div>${noSharesReason ? `<small class="sizing-warning">${noSharesReason}</small>` : ''}</div><div class="screen-reasons"><span>RSI ${item.rsi == null ? '資料不足' : Number(item.rsi).toFixed(1)}</span><span>${item.smaTrend ? '均線偏多' : '均線未偏多'}</span><span>${item.improving ? 'MACD 動能改善' : 'MACD 動能未改善'}</span><span>${item.volumeOK ? '成交量放大' : '量能未達確認'}</span></div><div class="candidate-links screen-links"><a href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a><a href="${esc(noticeUrl)}" target="_blank" rel="noopener noreferrer">公司公告 ↗</a></div></article>`;
-    }).join('');
+      return `<article class="screen-row"><div class="screen-row-top"><div class="candidate-stock"><b><span class="screen-rank">${offset + index + 1}</span>${esc(item.code)} ${esc(item.name || '')}</b><small>${esc(item.market || '台股')} · 日 K ${esc(item.date || '')} · 成交值 ${money(item.turnover)}</small></div><div class="screen-quote">${money(item.price)}<small class="${item.horizonReturn >= 0 ? 'positive' : 'negative'}">${data.horizon === 5 ? '5 日' : '20 日'} ${pct(item.horizonReturn)}</small></div><span class="screen-score screen-priority-${Number(item.priority) || 0}">${esc(item.priorityLabel || '一般觀察')} · ${item.score} 分</span></div><div class="screen-state">${esc(item.status)}</div><div class="screen-levels"><span>買入觀察區 <b>${marketRefMoney(item.entryLow)} – ${marketRefMoney(item.entryHigh)}</b></span><span>風險失效價 <b>${marketRefMoney(item.stop)}</b></span><span>假設停利 1R / 2R <b>${marketRefMoney(target1)} / ${marketRefMoney(target2)}</b></span></div><div class="screen-sizing"><b>部位試算（假設單檔使用整筆預算）</b><div><span>估算買入 <strong>${unitShares.toLocaleString('zh-TW')} 股</strong></span><span>假設進場均價 <strong>${marketRefMoney(entry)}</strong></span><span>預估投入 <strong>${money(invested)}</strong></span><span>觸及失效價估損 <strong>${money(plannedLoss)}</strong></span><span>全數停利 1R 毛利 <strong>${money(gross1)}</strong></span><span>全數停利 2R 毛利 <strong>${money(gross2)}</strong></span></div>${noSharesReason ? `<small class="sizing-warning">${noSharesReason}</small>` : ''}</div><div class="screen-reasons"><span>RSI ${item.rsi == null ? '資料不足' : Number(item.rsi).toFixed(1)}</span><span>${item.smaTrend ? '均線偏多' : '均線未偏多'}</span><span>${item.improving ? 'MACD 動能改善' : 'MACD 動能未改善'}</span><span>${item.volumeOK ? '成交量放大' : '量能未達確認'}</span></div><div class="candidate-links screen-links"><a href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a><a href="${esc(noticeUrl)}" target="_blank" rel="noopener noreferrer">公司公告 ↗</a></div></article>`;
+    }).join('') + `<nav class="screen-pagination" aria-label="候選股分頁"><span>第 ${currentPage} / ${pageCount} 頁 · 共 ${candidates.length.toLocaleString('zh-TW')} 檔</span><div><button type="button" class="secondary-button" data-screen-page="${currentPage - 1}" ${currentPage <= 1 ? 'disabled' : ''}>上一頁</button><button type="button" class="secondary-button" data-screen-page="${currentPage + 1}" ${currentPage >= pageCount ? 'disabled' : ''}>下一頁</button></div></nav>`;
   }
+  $('screenContent').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-screen-page]');
+    if (button && !button.disabled && screenCandidateResults) renderScreenCandidates(screenCandidateResults.data, screenCandidateResults.sizing, Number(button.dataset.screenPage));
+  });
   [['screenPriceUnlimited', 'screenPriceLimit'], ['screenBudgetUnlimited', 'screenBudget'], ['screenLossUnlimited', 'screenMaxLoss']].forEach(([toggleId, inputId]) => {
     $(toggleId).addEventListener('change', () => { const input = $(inputId); input.disabled = $(toggleId).checked; if (input.disabled) input.value = ''; });
   });
@@ -332,7 +339,7 @@
     if (!priceUnlimited && (!Number.isFinite(priceLimit) || priceLimit <= 0)) return showToast('請輸入大於 0 的每股價格上限，或選擇不限。');
     if (!budgetUnlimited && (!Number.isFinite(budget) || budget <= 0)) return showToast('請輸入大於 0 的投入預算，或選擇不限。');
     if (!lossUnlimited && (!Number.isFinite(maxLoss) || maxLoss <= 0)) return showToast('請輸入大於 0 的單筆最大可承受虧損，或選擇不限。');
-    button.disabled = true; button.textContent = '正在掃描…'; $('screenStatus').textContent = '正在整理上市櫃普通股行情，準備逐檔分析歷史日 K…'; $('screenContent').innerHTML = '';
+    button.disabled = true; button.textContent = '正在掃描…'; $('screenStatus').textContent = '正在整理上市櫃普通股行情，準備逐檔分析歷史日 K…'; $('screenContent').innerHTML = ''; screenCandidateResults = null;
     try {
       let response = await fugleFetch(`/api/fugle/screen?priceLimit=${encodeURIComponent(priceUnlimited ? 'unlimited' : priceLimit)}&horizon=${encodeURIComponent(horizon)}`), data = await response.json();
       if (!response.ok) throw new Error(data.error || '條件篩選失敗');
@@ -343,8 +350,9 @@
         response = await fugleFetch(`/api/fugle/screen/${encodeURIComponent(data.jobId)}`); data = await response.json();
         if (!response.ok) throw new Error(data.error || '候選掃描中斷，請重新篩選。');
       }
-      renderScreenCandidates(data, { budget, maxLoss, unit, budgetUnlimited, lossUnlimited });
-      $('screenStatus').textContent = `已分析 ${Number(data.analyzedCount || 0).toLocaleString('zh-TW')} / ${Number(data.eligibleCount || 0).toLocaleString('zh-TW')} 檔符合行情條件股票，顯示優先度最高的 ${data.candidates?.length || 0} 檔 · 每股上限 ${priceUnlimited ? '不限' : money(priceLimit)} · ${horizon === 5 ? '約一週' : '約一個月'} · 預算 ${budgetUnlimited ? '不限' : money(budget)} · 單筆虧損上限 ${lossUnlimited ? '不限' : money(maxLoss)} · ${unit === 1 ? '零股' : '整股'}估算 · 最近交易日資料${budgetUnlimited && lossUnlimited ? ' · 未設定部位上限，不估算股數' : ''}${data.warnings?.length ? ` · ${data.warnings.join('、')}` : ''}`;
+      const sizing = { budget, maxLoss, unit, budgetUnlimited, lossUnlimited };
+      screenCandidateResults = { data, sizing }; renderScreenCandidates(data, sizing);
+      $('screenStatus').textContent = `已分析 ${Number(data.analyzedCount || 0).toLocaleString('zh-TW')} / ${Number(data.eligibleCount || 0).toLocaleString('zh-TW')} 檔符合行情條件股票，完成評分 ${data.candidates?.length || 0} 檔；結果依分數由高至低排列，可翻頁瀏覽全部評分結果 · 每股上限 ${priceUnlimited ? '不限' : money(priceLimit)} · ${horizon === 5 ? '約一週' : '約一個月'} · 預算 ${budgetUnlimited ? '不限' : money(budget)} · 單筆虧損上限 ${lossUnlimited ? '不限' : money(maxLoss)} · ${unit === 1 ? '零股' : '整股'}估算 · 最近交易日資料${budgetUnlimited && lossUnlimited ? ' · 未設定部位上限，不估算股數' : ''}${data.warnings?.length ? ` · ${data.warnings.join('、')}` : ''}`;
     } catch (error) { $('screenStatus').textContent = error.message; }
     finally { button.disabled = false; button.textContent = '篩選並試算'; }
   });
