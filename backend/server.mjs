@@ -21,7 +21,7 @@ const FINMIND_TOKEN = process.env.FINMIND_TOKEN || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma3';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma4:e2b';
 const OLLAMA_PROXY_TOKEN = process.env.OLLAMA_PROXY_TOKEN || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -826,7 +826,7 @@ const server = http.createServer(async (req, res) => {
       const validSourceIds = new Set(sources.map((item) => item.id));
       const cleanText = (value, max = 500) => String(value || '').replace(/[<>]/g, '').slice(0, max);
       const cleanFactors = (value, prefix) => (Array.isArray(value) ? value : []).filter((item) => item && Array.isArray(item.evidence) && item.evidence.some((id) => validSourceIds.has(String(id)) && String(id).startsWith(prefix))).slice(0, 5).map((item) => ({ title: cleanText(item.title, 120), direction: ['可能推升', '可能壓抑', '方向不明'].includes(item.direction) ? item.direction : '方向不明', mechanism: cleanText(item.mechanism, 500), horizon: ['短期', '中期', '長期'].includes(item.horizon) ? item.horizon : '未評估', confidence: ['高', '中', '低'].includes(item.confidence) ? item.confidence : '低', evidence: item.evidence.map(String).filter((id) => validSourceIds.has(id) && id.startsWith(prefix)).slice(0, 3) }));
-      return send(res, 200, { stock: { code: String(stock.code), name: stock.name, market: stock.market, latestClose: Number(stock.price), quoteDate: stock.date }, candles: candles.map((row) => ({ date: row.date, close: Number(row.close) })), sources, analysis: { summary: cleanText(analysis.summary, 800) || '目前沒有足夠證據整理走勢因素。', domesticFactors: cleanFactors(analysis.domesticFactors, 'D'), internationalFactors: cleanFactors(analysis.internationalFactors, 'G'), risks: (Array.isArray(analysis.risks) ? analysis.risks : []).map((item) => cleanText(item, 200)).filter(Boolean).slice(0, 6) }, provider });
+      return send(res, 200, { stock: { code: String(stock.code), name: stock.name, market: stock.market, latestClose: Number(stock.price), quoteDate: stock.date }, candles: candles.map((row) => ({ date: row.date, close: Number(row.close) })), sources, analysis: { summary: cleanText(analysis.summary, 800) || '目前沒有足夠證據整理走勢因素。', domesticFactors: cleanFactors(analysis.domesticFactors, 'D'), internationalFactors: cleanFactors(analysis.internationalFactors, 'G'), risks: (Array.isArray(analysis.risks) ? analysis.risks : []).map((item) => cleanText(item, 200)).filter(Boolean).slice(0, 6) }, provider, model: provider === 'ollama' ? OLLAMA_MODEL : 'Gemini 3.8 Flash' });
     }
     if (url.pathname === '/api/international-research' && req.method === 'POST') {
       let user = null;

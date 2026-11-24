@@ -17,6 +17,7 @@ try {
 } catch {}
 
 const token = process.env.OLLAMA_PROXY_TOKEN || '';
+const model = process.env.OLLAMA_MODEL || 'gemma4:e2b';
 if (token.length < 32) {
   console.error('請先在本機 config.env 設定至少 32 字元的 OLLAMA_PROXY_TOKEN。');
   process.exit(1);
@@ -76,16 +77,27 @@ const server = http.createServer(async (req, res) => {
 
     requestCount++;
     busy = true;
+    const modelName = typeof body.model === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(body.model)
+      ? body.model : model;
+    const format = body.format === 'json' ? 'json' : undefined;
+    const rawOptions = body.options && typeof body.options === 'object' ? body.options : {};
+    const options = {
+      temperature: Number.isFinite(Number(rawOptions.temperature))
+        ? Math.max(0, Math.min(1, Number(rawOptions.temperature))) : 0.25,
+      num_predict: Number.isFinite(Number(rawOptions.num_predict))
+        ? Math.max(128, Math.min(2048, Math.floor(Number(rawOptions.num_predict)))) : 700
+    };
     const response = await fetch('http://127.0.0.1:11434/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'gemma4:e2b', messages: body.messages, stream: false }),
+      body: JSON.stringify({ model: modelName, ...(format ? { format } : {}), messages: body.messages, stream: false, options }),
       signal: AbortSignal.timeout(180000)
     });
     const result = await response.json().catch(() => ({}));
     return send(res, response.ok ? 200 : 502, result);
-  } catch {
-    return send(res, 502, { error: 'Local Ollama request failed' });
+  } catch (error) {
+    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+    return send(res, timedOut ? 504 : 502, { error: timedOut ? 'Local Ollama timed out while generating a response' : 'Local Ollama request failed' });
   } finally {
     busy = false;
   }
