@@ -380,64 +380,6 @@
     } catch (error) { $('newsSourceLinks').innerHTML = ''; renderNews([], error.message || '新聞來源暫時無法連線，請稍後重試。'); }
     finally { button.disabled = false; button.textContent = '⌕ 搜尋新聞'; }
   }
-  function renderStockImpact(data) {
-    const candles = (data.candles || []).filter((row) => Number.isFinite(Number(row.close)) && Number(row.close) > 0);
-    const sources = data.sources || [], analysis = data.analysis || {};
-    if (!candles.length) { $('stockImpactResult').innerHTML = '<p class="stock-impact-empty">沒有可顯示的歷史收盤資料，請稍後重試。</p>'; return; }
-    const width = 960, height = 270, left = 62, right = 18, top = 22, bottom = 30;
-    const values = candles.map((row) => Number(row.close)), min = Math.min(...values), max = Math.max(...values), spread = Math.max(max - min, max * .012);
-    const x = (index) => left + index * (width - left - right) / Math.max(1, candles.length - 1);
-    const y = (value) => top + (max - value) * (height - top - bottom) / spread;
-    const candleDate = (row) => String(row.date).slice(0, 10);
-    const dateIndex = (rawDate) => { const day = String(rawDate || '').slice(0, 10); return candles.findIndex((row) => candleDate(row) >= day); };
-    const eventIndexBySource = new Map();
-    const eventMarkers = sources.map((source, sourceIndex) => {
-      const index = dateIndex(source.publishedAt); if (index < 0) return '';
-      eventIndexBySource.set(source.id, index);
-      const offset = source.category === 'domestic' ? -4 : 4;
-      return `<circle class="stock-impact-event-marker ${source.category}" data-stock-impact-date="${index}" cx="${x(index).toFixed(1)}" cy="${(y(values[index]) + offset).toFixed(1)}" r="5"><title>${esc(source.category === 'domestic' ? '國內' : '國際')}消息：${esc(source.title)}</title></circle>`;
-    }).join('');
-    const domestic = sources.filter((item) => item.category === 'domestic'), international = sources.filter((item) => item.category === 'international');
-    const factorCards = (items) => items.length ? `<div class="stock-impact-factor-list">${items.map((item) => `<article class="stock-impact-factor"><header><b>${esc(item.title)}</b><span class="stock-impact-direction ${item.direction === '可能推升' ? 'positive' : item.direction === '可能壓抑' ? 'negative' : ''}">${esc(item.direction)}</span></header><p>${esc(item.mechanism)}</p><small>${esc(item.horizon)} · 信心${esc(item.confidence)}</small><div class="stock-impact-evidence"><span>來源</span>${item.evidence.map((id) => { const source = sources.find((entry) => entry.id === id); const index = eventIndexBySource.get(id); return source ? `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${esc(id)} · ${esc(source.title)} ↗</a>${index !== undefined ? `<button type="button" data-stock-impact-date="${index}">對照走勢</button>` : ''}` : ''; }).join('')}</div></article>`).join('')}</div>` : '<p class="stock-impact-empty">目前沒有足夠來源支持此類因素。可先查看新聞清單，或稍後再查。</p>';
-    const sourceCards = (items) => items.length ? `<div class="stock-impact-source-list">${items.map((item) => { const date = new Date(item.publishedAt), displayDate = Number.isNaN(date.getTime()) ? '日期未提供' : date.toLocaleDateString('zh-TW'); const index = eventIndexBySource.get(item.id); return `<article><div><b>${esc(displayDate)} · ${esc(item.source || 'Google News')}</b><a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.title)} ↗</a></div>${index !== undefined ? `<button type="button" data-stock-impact-date="${index}">查看日期</button>` : ''}</article>`; }).join('')}</div>` : '<p class="stock-impact-empty">這一類目前沒有找到新聞。新聞缺漏不代表沒有影響因素。</p>';
-    const close = values.at(-1), start = values[0], returnRate = start ? (close / start - 1) * 100 : 0;
-    const currentIndex = candles.length - 1;
-    const factorCount = (analysis.domesticFactors?.length || 0) + (analysis.internationalFactors?.length || 0);
-    $('stockImpactResult').innerHTML = `<section class="stock-impact-overview"><div class="stock-impact-overview-heading"><div><span class="stock-impact-kicker">研究摘要</span><h3>${esc(data.stock.code)} ${esc(data.stock.name)} <small>${esc(data.stock.market || '')}</small></h3></div><span class="stock-impact-model-tag">${esc(data.provider === 'ollama' ? `Ollama · ${data.model || '本機模型'}` : 'Gemini')}</span></div><p>${esc(analysis.summary || '目前沒有足夠資料整理可能因素。')}</p><div class="stock-impact-stats"><div><span>最近收盤</span><b>${money(close)}</b><small>${esc(candleDate(candles.at(-1)))} · Fugle</small></div><div><span>分析區間</span><b>${esc(candleDate(candles[0]))} 至 ${esc(candleDate(candles.at(-1)))}</b><small>${candles.length} 個交易日</small></div><div><span>區間漲跌</span><b class="${returnRate >= 0 ? 'positive' : 'negative'}">${returnRate >= 0 ? '+' : ''}${returnRate.toFixed(2)}%</b><small>起點至最近收盤</small></div><div><span>新聞與因素</span><b>${sources.length} 則新聞 · ${factorCount} 項線索</b><small>因素需回看來源確認</small></div></div></section><section class="stock-impact-chart-card"><header><div><span class="stock-impact-kicker">價格與事件</span><h3>逐日走勢</h3><small>拖動拉桿查看日期；圓點表示新聞發布後遇到的第一個交易日。</small></div><span class="stock-impact-legend"><i></i>國內 <i class="international"></i>國際</span></header><svg id="stockImpactChart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(data.stock.name)}歷史收盤價與新聞日期">${[0,1,2,3].map((step) => { const level = min + spread * step / 3; return `<line x1="${left}" x2="${width-right}" y1="${y(level).toFixed(1)}" y2="${y(level).toFixed(1)}" class="stock-impact-gridline"/><text x="${left-8}" y="${(y(level)+3).toFixed(1)}" text-anchor="end">${level.toFixed(2)}</text>`; }).join('')}<path d="${candles.map((row, index) => `${index ? 'L' : 'M'}${x(index).toFixed(1)},${y(Number(row.close)).toFixed(1)}`).join(' ')}" class="stock-impact-price-line"/>${eventMarkers}<line id="stockImpactCursor" x1="${x(currentIndex)}" x2="${x(currentIndex)}" y1="${top}" y2="${height-bottom}" class="stock-impact-cursor"/><circle id="stockImpactDot" cx="${x(currentIndex)}" cy="${y(close)}" r="5" class="stock-impact-dot"/><text x="${left}" y="${height-5}">${esc(candleDate(candles[0]))}</text><text x="${width-right}" y="${height-5}" text-anchor="end">${esc(candleDate(candles.at(-1)))}</text></svg><label class="stock-impact-slider-label" for="stockImpactSlider"><span>選擇交易日</span><input id="stockImpactSlider" type="range" min="0" max="${candles.length-1}" step="1" value="${currentIndex}"><output id="stockImpactSelectedDate">${esc(candleDate(candles.at(-1)))}</output></label><div class="stock-impact-selected"><div><span>當日收盤</span><b id="stockImpactSelectedPrice">${money(close)}</b></div><div><span>單日漲跌</span><b id="stockImpactSelectedChange">—</b></div><div><span>當日對照新聞</span><b id="stockImpactSelectedCount">0 則</b></div></div><div id="stockImpactSelectedEvents" class="stock-impact-selected-events" aria-live="polite"></div></section><div class="stock-impact-factor-columns"><section><span class="stock-impact-kicker">台灣消息</span><h3>國內因素 · ${analysis.domesticFactors?.length || 0}</h3>${factorCards(analysis.domesticFactors || [])}</section><section><span class="stock-impact-kicker">海外消息</span><h3>國際因素 · ${analysis.internationalFactors?.length || 0}</h3>${factorCards(analysis.internationalFactors || [])}</section></div><section class="stock-impact-sources"><span class="stock-impact-kicker">原始資料</span><h3>新聞來源 · ${sources.length} 則</h3><div class="stock-impact-source-columns"><div><h4>國內消息 · ${domestic.length}</h4>${sourceCards(domestic)}</div><div><h4>國際消息 · ${international.length}</h4>${sourceCards(international)}</div></div></section>${analysis.risks?.length ? `<section class="stock-impact-caveats"><b>解讀限制</b><ul>${analysis.risks.map((risk) => `<li>${esc(risk)}</li>`).join('')}</ul></section>` : ''}`;
-    const slider = $('stockImpactSlider');
-    const updateCursor = () => {
-      const index = Number(slider.value), row = candles[index], previous = candles[index - 1], markerX = x(index), markerY = y(Number(row.close));
-      const change = previous && Number(previous.close) ? (Number(row.close) / Number(previous.close) - 1) * 100 : null;
-      const day = candleDate(row), sameDay = sources.filter((source) => eventIndexBySource.get(source.id) === index);
-      $('stockImpactCursor').setAttribute('x1', markerX); $('stockImpactCursor').setAttribute('x2', markerX);
-      $('stockImpactDot').setAttribute('cx', markerX); $('stockImpactDot').setAttribute('cy', markerY);
-      $('stockImpactSelectedDate').textContent = day; $('stockImpactSelectedPrice').textContent = money(row.close);
-      const changeNode = $('stockImpactSelectedChange'); changeNode.textContent = change == null ? '區間起點' : `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
-      changeNode.classList.toggle('positive', change != null && change >= 0); changeNode.classList.toggle('negative', change != null && change < 0);
-      $('stockImpactSelectedCount').textContent = `${sameDay.length} 則`;
-      $('stockImpactSelectedEvents').innerHTML = sameDay.length ? `<b>${esc(day)} 附近的新聞</b>${sameDay.map((source) => `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer"><span class="${source.category}">${source.category === 'domestic' ? '國內' : '國際'}</span>${esc(source.title)} ↗</a>`).join('')}` : `<span>${esc(day)} 沒有對應到本次搜尋的新聞；日期接近不代表新聞造成當日漲跌。</span>`;
-    };
-    slider.addEventListener('input', updateCursor);
-    $('stockImpactResult').querySelectorAll('[data-stock-impact-date]').forEach((control) => control.addEventListener('click', () => { slider.value = control.dataset.stockImpactDate; updateCursor(); $('stockImpactChart').scrollIntoView({ behavior: 'smooth', block: 'center' }); }));
-    $('stockImpactResult').querySelectorAll('.stock-impact-event-marker').forEach((marker) => marker.addEventListener('click', () => { slider.value = marker.dataset.stockImpactDate; updateCursor(); }));
-    updateCursor();
-  }
-  $('stockImpactDemo').addEventListener('click', () => { $('stockImpactSymbol').value = '2330'; $('stockImpactStatus').textContent = '已填入台積電範例代號；按「分析漲跌因素」即可查詢。'; $('stockImpactSymbol').focus(); });
-  $('stockImpactForm').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!$('stockImpactConsent').checked) { $('stockImpactStatus').textContent = '請先閱讀資料傳送說明並勾選同意。'; $('stockImpactConsent').focus(); return; }
-    const button = $('stockImpactSubmit'); button.disabled = true; button.textContent = '整理國內外資料…'; $('stockImpactResult').hidden = true; $('stockImpactConsent').checked = false;
-    $('stockImpactStatus').textContent = '正在查詢最近日 K 與國內外新聞，並整理可能影響路徑…';
-    try {
-      const { data: sessionData } = await supabaseClient?.auth.getSession() || {};
-      const headers = { 'Content-Type': 'application/json' }; if (sessionData?.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
-      const response = await fetch('/api/stock-impact', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ query: $('stockImpactSymbol').value.trim(), provider: $('stockImpactProvider').value, aiConsent: true }) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || '分析失敗，請稍後再試。');
-      renderStockImpact(data); $('stockImpactResult').hidden = false;
-      $('stockImpactStatus').textContent = `已整理 ${data.sources.length} 則國內外新聞與 ${data.candles.length} 個交易日走勢；結果只列有來源支持的因素。`;
-    } catch (error) { $('stockImpactStatus').textContent = error.message || '目前無法完成查詢。'; }
-    finally { button.disabled = false; button.textContent = '開始分析'; }
-  });
   $('globalDemoFill').addEventListener('click', () => {
     $('globalCompany').value = 'NVIDIA'; $('globalTicker').value = 'NVDA'; $('globalTaiwanCodes').value = '2330、2317'; $('globalRelation').value = 'AI 加速器、先進製程、伺服器供應鏈';
     $('globalResearchStatus').textContent = '已填入示範查詢條件。按「分析產業與個股」後會重新查詢即時公開資料；需勾選資料同意。';
@@ -690,13 +632,6 @@
       };
       $('globalAiProvider').addEventListener('change', updateGlobalResearchStatus);
       updateGlobalResearchStatus();
-      const stockImpactProvider = $('stockImpactProvider');
-      [...stockImpactProvider.options].forEach((option) => { option.disabled = !assistantProviderAvailability[option.value]; });
-      if (!assistantProviderAvailability[stockImpactProvider.value]) stockImpactProvider.value = assistantProviderAvailability.gemini ? 'gemini' : 'ollama';
-      $('stockImpactStatus').textContent = assistantProviderAvailability[stockImpactProvider.value]
-        ? `設定已完成。送出時會連線查詢 ${stockImpactProvider.value === 'gemini' ? 'Gemini' : 'Ollama'}、Fugle 日 K 與國內外新聞。`
-        : '目前沒有可用的 AI 服務。若使用 Render 上的本機 Ollama，請設定有效的 OLLAMA_BASE_URL（https://…trycloudflare.com），並確保本機 Tunnel 持續運作。';
-      stockImpactProvider.addEventListener('change', () => { $('stockImpactStatus').textContent = `${stockImpactProvider.value === 'gemini' ? 'Gemini' : 'Ollama'} 已選取；輸入股票並勾選同意後即可查詢。`; });
       const ollamaTopupOption = $('topupMode').querySelector('option[value="ollama"]');
       ollamaTopupOption.disabled = !assistantProviderAvailability.ollama;
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
@@ -1025,7 +960,7 @@
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', stockImpactResearch: '台股漲跌因素', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究資料', workspace: '多功能工作區' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究資料', workspace: '多功能工作區' };
   const workspaceGrid = $('workspacePanelGrid'), workspaceHome = new Map();
   const workspaceFeatureIds = Object.keys(pageTitles).filter((id) => !['overview', 'workspace'].includes(id));
   workspaceFeatureIds.forEach((id) => { const element = $(id); if (element?.parentElement) workspaceHome.set(id, { parent: element.parentElement, next: element.nextElementSibling }); });
