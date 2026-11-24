@@ -26,6 +26,7 @@ const OLLAMA_PROXY_TOKEN = process.env.OLLAMA_PROXY_TOKEN || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const fundamentalsCache = new Map();
+let marketQuotesCache = { data: null, expiresAt: 0 };
 const secTickerCache = { expiresAt: 0, data: null };
 const assistantRateLimits = new Map();
 const fugleHistoryRequests = [];
@@ -55,7 +56,7 @@ function normalize(row, market) {
   const changeRaw = Number(String(value(row, ['Change', '漲跌價差', '漲跌'])).replace(/,/g, ''));
   const turnover = Number(String(value(row, ['TradeValue', 'TradingValue', 'TradeAmount', '成交金額', '成交值'])).replace(/,/g, ''));
   const date = rocDate(value(row, ['Date', '日期', '交易日期']));
-  return { code, name, price, change: Number.isFinite(changeRaw) ? changeRaw : null, turnover: Number.isFinite(turnover) ? turnover : null, date, market };
+  return { code, name, price, change: Number.isFinite(changeRaw) ? changeRaw : null, turnover: Number.isFinite(turnover) ? turnover : null, date, market, source: market === '上市' ? 'TWSE OpenAPI' : 'TPEx OpenAPI' };
 }
 async function fetchJson(url, extraHeaders = {}) {
   const response = await fetch(url, { signal: AbortSignal.timeout(12000), headers: { 'User-Agent': 'CangguPersonalStockApp/1.0', ...extraHeaders } });
@@ -108,6 +109,7 @@ async function fundamentals(symbol) {
   return data;
 }
 async function quotes() {
+  if (marketQuotesCache.data && marketQuotesCache.expiresAt > Date.now()) return marketQuotesCache.data;
   const sources = [
     ['上市', 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
     ['上櫃', 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes']
@@ -119,7 +121,9 @@ async function quotes() {
   }));
   const merged = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
   if (!merged.length) throw new Error('行情來源目前無法連線，請稍後再試。');
-  return { quotes: merged, updatedAt: new Date().toISOString(), warnings: results.map((r, i) => r.status === 'rejected' ? `${sources[i][0]}市場資料暫時無法取得` : null).filter(Boolean) };
+  const data = { quotes: merged, updatedAt: new Date().toISOString(), source: 'TWSE／TPEx 官方 OpenAPI', sourceType: 'official_daily_close', warnings: results.map((r, i) => r.status === 'rejected' ? `${sources[i][0]}市場資料暫時無法取得` : null).filter(Boolean) };
+  marketQuotesCache = { data, expiresAt: Date.now() + 5 * 60 * 1000 };
+  return data;
 }
 function decodeXml(text) {
   return text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]+>/g, '').replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&#x([\da-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
@@ -246,6 +250,33 @@ async function fugleIntradayQuote(symbol) {
 
   return response.json();
 }
+async function quoteWithFallback(symbol, dailyRows = null) {
+  let fugleError = '';
+  if (FUGLE_API_KEY) {
+    try {
+      const quote = await fugleIntradayQuote(symbol);
+      const price = Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose);
+      if (!(price > 0 && Number.isFinite(price))) throw new Error('Fugle 沒有提供可用價格。');
+      return { ...quote, symbol: quote.symbol || symbol, quoteSource: 'Fugle', priceType: quote.lastPrice == null ? 'Fugle 收盤價／昨收參考' : 'Fugle 最後成交價（依帳號權限與市場狀態）' };
+    } catch (error) { fugleError = error.message || 'Fugle 報價暫時無法取得。'; }
+  } else fugleError = '未設定 Fugle API 金鑰';
+
+  const rows = dailyRows || (await quotes()).quotes;
+  const row = rows.find((item) => String(item.code) === String(symbol));
+  if (!row || !(Number(row.price) > 0)) {
+    throw Object.assign(new Error(`Fugle 報價無法使用，官方最近收盤資料也找不到此股票。${fugleError ? ` ${fugleError}` : ''}`), { status: 502 });
+  }
+  const change = Number.isFinite(Number(row.change)) ? Number(row.change) : null;
+  const previousClose = change === null ? null : Number(row.price) - change;
+  return {
+    symbol: String(row.code), name: row.name, market: row.market,
+    lastPrice: null, closePrice: Number(row.price), previousClose,
+    change, changePercent: previousClose > 0 && change !== null ? change / previousClose * 100 : null,
+    date: row.date || null, quoteUpdatedAt: row.date ? `官方收盤資料日期 ${row.date}` : '官方最近收盤資料',
+    quoteSource: row.source || (row.market === '上市' ? 'TWSE OpenAPI' : 'TPEx OpenAPI'),
+    priceType: '交易所最近收盤價（非盤中即時）', fallbackReason: fugleError
+  };
+}
 async function fugleTrend(symbol, days) {
   if (!FUGLE_API_KEY) return { configured: false };
   const end = new Date(), start = new Date(end.getTime() - days * 86400000);
@@ -327,7 +358,7 @@ function assistantSystemPrompt(topic, marketContext = '') {
     ? '本次是加碼試算。使用者明確提供的平均成本、持股數和預算可用於解釋試算結果；先照提供的計算值說明，不要重新計算或改動股數。若有近 20 個交易日高低價與 ATR，另列歷史價格觀察範圍並解釋其限制；歷史區間不是建議進場價。趨勢只作一般研究參考，不可建議使用者一定加碼，也不可把技術區間當成個人化買賣指令。'
     : `使用者選擇的網站主題是「${topic}」。請將回答聚焦於此功能及其相關概念；你只收到主題名稱，沒有讀取該頁或其中的個人資料。`;
   const marketInstruction = marketContext && !internationalImpact
-    ? `\n以下是本次由伺服器查詢的 Fugle 行情與日 K 技術摘要：\n${marketContext}\n回答股票相關問題時，請以這份資料為主要依據，並明確標示報價時間、歷史 K 線日期與來源。請用繁體中文、短句和下列結構回答：\n1. 行情摘要：價格、漲跌和資料時間。\n2. 趨勢判讀：給出偏多／中性／偏弱的研究傾向，並列出均線、RSI、MACD、區間及成交量中實際有提供的指標。\n3. 條件式觀察：說明偏多、轉弱或盤整時可觀察的條件；若使用者詢問進出場，可用資料中的近 20 日高低與 ATR 作為歷史觀察區間，清楚說明觸發條件，不得稱為精確或保證的買賣價。\n4. 主要風險與下一步核對事項。\n只引用資料中確實存在的數字；缺漏請寫「資料不足」。不要捏造財報、新聞、法人籌碼或未提供的行情。不可聲稱看到了使用者持倉，也不可給保證獲利或要求立即買賣的指令。`
+    ? `\n以下是本次由伺服器查詢的行情與日 K 技術摘要：\n${marketContext}\n回答股票相關問題時，請以這份資料為主要依據，並明確標示報價時間、歷史 K 線日期與來源。若報價來源是交易所 OpenAPI，必須清楚說明這是最近收盤價、不是盤中即時價。請用繁體中文、短句和下列結構回答：\n1. 行情摘要：價格、漲跌和資料時間。\n2. 趨勢判讀：給出偏多／中性／偏弱的研究傾向，並列出均線、RSI、MACD、區間及成交量中實際有提供的指標。\n3. 條件式觀察：說明偏多、轉弱或盤整時可觀察的條件；若使用者詢問進出場，可用資料中的近 20 日高低與 ATR 作為歷史觀察區間，清楚說明觸發條件，不得稱為精確或保證的買賣價。\n4. 主要風險與下一步核對事項。\n只引用資料中確實存在的數字；缺漏請寫「資料不足」。不要捏造財報、新聞、法人籌碼或未提供的行情。不可聲稱看到了使用者持倉，也不可給保證獲利或要求立即買賣的指令。`
     : '';
   return `你是端股內的台股研究助理，使用繁體中文，先給簡短結論，再用清楚標題和條列列出依據。區分「資料事實」與「推論」，說明資料日期及限制。可以提供一般投資研究參考、風險情境與查證方向，但不可保證報酬、假裝掌握未提供資料，或把回答寫成適合此使用者的確定買賣命令。除本次附帶的行情資料和使用者本次自行提供的內容外，你沒有取得使用者的持倉、帳戶或其他頁面資訊。缺資料就直接說明，不要猜測；勿索取密碼或 API 金鑰。請以一般讀者看得懂的繁體中文輸出，不要使用 Markdown 星號、井字號或 LaTeX；計算請寫成白話算式，例如「67 股 × NT$68.2／股 = 約 NT$4,569.40」，並解釋數字代表什麼。${topicInstruction}${marketInstruction}`;
 }
@@ -355,18 +386,18 @@ function assistantMarketSummary(symbol, quote, trend) {
   const dailyVolumes = recent.map((row) => Number(row.volume)).filter(Number.isFinite);
   const latestVolume = Number(last?.volume);
   const quoteTime = Number(quote.lastUpdated);
-  const quoteUpdatedAt = Number.isFinite(quoteTime) && quoteTime > 0
+  const quoteUpdatedAt = quote.quoteUpdatedAt || (Number.isFinite(quoteTime) && quoteTime > 0
     ? new Date(quoteTime / 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
-    : 'Fugle 未提供更新時間';
+    : '來源未提供更新時間');
   const quoteData = {
-    source: 'Fugle 即時報價 API（依方案可能為延遲或最近成交資料）',
+    source: quote.quoteSource === 'Fugle' ? 'Fugle 行情 API（即時性依帳號權限與市場狀態）' : `${quote.quoteSource || '交易所 OpenAPI'} 最近收盤資料`,
     symbol: quote.symbol || symbol,
     name: quote.name || '',
     market: quote.market || quote.exchange || '',
     quoteUpdatedAt,
     quoteDate: quote.date || null,
     lastPrice: round(quote.lastPrice ?? quote.closePrice),
-    priceType: quote.lastPrice == null ? '無最後成交價時以 Fugle 收盤價欄位作參考' : '最後成交價（含試撮）',
+    priceType: quote.priceType || (quote.lastPrice == null ? '收盤價欄位作參考' : '最後成交價（含試撮）'),
     change: round(quote.change),
     changePercent: round(quote.changePercent),
     previousClose: round(quote.previousClose),
@@ -401,7 +432,7 @@ function assistantMarketSummary(symbol, quote, trend) {
 }
 function fugleAssistantAnswer(marketContext) {
   const { quote, technical } = JSON.parse(marketContext);
-  const lines = [`${quote.name ? `${quote.name}（${quote.symbol}）` : quote.symbol}｜Fugle 行情與技術摘要`,
+  const lines = [`${quote.name ? `${quote.name}（${quote.symbol}）` : quote.symbol}｜行情與技術摘要（報價來源：${quote.source}）`,
     `報價：NT$ ${quote.lastPrice ?? '資料不足'}；${quote.change == null ? '漲跌資料不足' : `漲跌 ${quote.change >= 0 ? '+' : ''}${quote.change}（${quote.changePercent ?? '—'}%）`}；${quote.quoteUpdatedAt}。${quote.priceType ? `價格類型：${quote.priceType}。` : ''}`];
   if (technical.unavailable) {
     lines.push(`歷史日 K：${technical.reason || '目前無法取得'}。`, '目前只能參考報價，無法判讀中短期趨勢。');
@@ -415,7 +446,7 @@ function fugleAssistantAnswer(marketContext) {
     lines.push(`技術數據：RSI(14) ${technical.rsi14 ?? '不足'}；MACD 柱體 ${technical.macdHistogram ?? '不足'}${technical.macdHistogramImproving == null ? '' : technical.macdHistogramImproving ? '（較前一日改善）' : '（較前一日轉弱）'}；20 日區間 NT$ ${technical.recent20TradingDayLow ?? '不足'}–${technical.recent20TradingDayHigh ?? '不足'}；ATR(14) ${technical.atr14 ?? '不足'}。`);
     if (technical.return20TradingDaysPct != null) lines.push(`近 20 個交易日漲跌幅：${technical.return20TradingDaysPct >= 0 ? '+' : ''}${technical.return20TradingDaysPct}%。`);
   }
-  lines.push('解讀方式：這是依 Fugle 報價及歷史日 K 數值整理的固定摘要，並非 AI 對話；資料可能延遲，也不構成個人化買賣建議。');
+  lines.push('解讀方式：這是依上方標示來源的報價及 Fugle 歷史日 K 數值整理的固定摘要，並非 AI 對話；報價可能延遲，也不構成個人化買賣建議。');
   return lines.join('\n');
 }
 async function askGemini(messages, topic, marketContext = '', outputFormat = 'text') {
@@ -608,7 +639,7 @@ const server = http.createServer(async (req, res) => {
       if (symbol && !/^\d{4,6}$/.test(symbol)) return send(res, 400, { error: '股票代號請輸入 4–6 位數字。' });
       if (provider === 'fugle') {
         if (!symbol) return send(res, 400, { error: '使用 Fugle 行情摘要時，請先填入股票代號。' });
-        const quote = await fugleIntradayQuote(symbol);
+        const quote = await quoteWithFallback(symbol);
         let trend = null;
         try { trend = await fugleTrend(symbol, 150); }
         catch (error) { trend = { error: error.message || 'Fugle 歷史日 K 暫時無法取得。' }; }
@@ -619,7 +650,7 @@ const server = http.createServer(async (req, res) => {
       if (messages.some((item) => !['user', 'assistant'].includes(item.role) || !item.content || item.content.length > 2000) || messages.at(-1)?.role !== 'user') return send(res, 400, { error: '每則訊息需在 2,000 字內，且最新訊息必須是你的提問。' });
       let marketContext = '';
       if (symbol) {
-        const quote = await fugleIntradayQuote(symbol);
+        const quote = await quoteWithFallback(symbol);
         let trend = null;
         try { trend = await fugleTrend(symbol, 150); }
         catch (error) { trend = { error: error.message || 'Fugle 歷史日 K 暫時無法取得。' }; }
@@ -644,7 +675,6 @@ const server = http.createServer(async (req, res) => {
       if (![1, 1000].includes(shareUnit)) return send(res, 400, { error: '股數單位設定不正確。' });
       if (!Number.isFinite(commissionRatePercent) || commissionRatePercent < 0 || commissionRatePercent > 1 || !Number.isFinite(sellTaxRatePercent) || sellTaxRatePercent < 0 || sellTaxRatePercent > 5) return send(res, 400, { error: '請確認手續費與賣出證交稅率設定。' });
       if (!mode) return send(res, 400, { error: '請選擇 Fugle 試算或 Ollama 分析。' });
-      if (!FUGLE_API_KEY) return send(res, 503, { error: '尚未設定 Fugle API 金鑰，無法取得目前行情。' });
       if (mode === 'ollama') {
         if (body.aiConsent !== true) return send(res, 400, { error: '使用 Ollama 分析前，請先勾選資料傳送同意。' });
         if (!aiProviderConfigured('ollama')) return send(res, 503, { error: 'Ollama 服務尚未設定。' });
@@ -660,13 +690,13 @@ const server = http.createServer(async (req, res) => {
         if (unique.length !== 1) return send(res, 404, { error: unique.length ? '名稱符合多檔股票，請改輸入股票代號。' : '找不到這個名稱；可輸入完整股票名稱或代號。' });
         symbol = String(unique[0].code); resolvedName = String(unique[0].name || '');
       }
-      const quote = await fugleIntradayQuote(symbol);
+      const quote = await quoteWithFallback(symbol);
       const price = Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose);
-      if (!(price > 0 && Number.isFinite(price))) return send(res, 502, { error: 'Fugle 沒有提供可用價格，請稍後重試。' });
+      if (!(price > 0 && Number.isFinite(price))) return send(res, 502, { error: '目前沒有可用報價或官方收盤資料，請稍後重試。' });
       const quoteTimestamp = Number(quote.lastUpdated);
-      const quoteUpdatedAt = Number.isFinite(quoteTimestamp) && quoteTimestamp > 0
+      const quoteUpdatedAt = quote.quoteUpdatedAt || (Number.isFinite(quoteTimestamp) && quoteTimestamp > 0
         ? new Date(quoteTimestamp / 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
-        : 'Fugle 未提供更新時間';
+        : '來源未提供更新時間');
       const sharesToBuy = Math.floor(budget / (price * shareUnit)) * shareUnit;
       const addedCost = sharesToBuy * price;
       const totalShares = currentShares + sharesToBuy;
@@ -685,7 +715,8 @@ const server = http.createServer(async (req, res) => {
         symbol: quote.symbol || symbol,
         name: quote.name || resolvedName,
         price,
-        priceType: quote.lastPrice == null ? 'Fugle 收盤價／昨收參考' : 'Fugle 最後成交價（含試撮）',
+        quoteSource: quote.quoteSource || 'Fugle',
+        priceType: quote.priceType || (quote.lastPrice == null ? 'Fugle 收盤價／昨收參考' : 'Fugle 最後成交價（依帳號權限與市場狀態）'),
         quoteDate: quote.date || null,
         quoteUpdatedAt,
         averageCost,
@@ -839,7 +870,7 @@ const server = http.createServer(async (req, res) => {
       const taiwan = await Promise.all(validStocks.slice(0, 8).map(async (item) => {
         const row = marketByCode.get(String(item.code));
         let quote = null, quoteError = '';
-        if (FUGLE_API_KEY) try { quote = await fugleIntradayQuote(String(item.code)); } catch (error) { quoteError = error.message || 'Fugle 報價暫時無法取得。'; }
+        try { quote = await quoteWithFallback(String(item.code), marketRows); } catch (error) { quoteError = error.message || '報價暫時無法取得。'; }
         return { ...item, code: String(item.code), name: row.name, market: row.market, dailyClose: row.price, dailyDate: row.date, quote, quoteError };
       }));
       impactAnalysis = {
