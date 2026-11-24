@@ -744,6 +744,26 @@ const server = http.createServer(async (req, res) => {
       const feed = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
       return send(res, 200, await news(feed));
     }
+    if (url.pathname === '/api/event-replay' && req.method === 'POST') {
+      if (process.env.NODE_ENV === 'production' || SUPABASE_URL) { const user = await requireAuthenticatedUser(req, res); if (!user) return; }
+      const body = await readJsonBody(req);
+      const code = String(body.code || '').trim();
+      const name = String(body.name || '').replace(/[<>]/g, '').slice(0, 80);
+      const eventDate = String(body.eventDate || '').slice(0, 10);
+      if (!/^\d{4}$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || Number.isNaN(Date.parse(`${eventDate}T00:00:00Z`))) return send(res, 400, { error: '請選擇有效的台股代號與新聞日期。' });
+      if (!FUGLE_API_KEY) return send(res, 503, { error: '尚未設定 Fugle API 金鑰，無法讀取歷史日 K。' });
+      const trend = await fugleTrend(code, 450);
+      const eventIndex = trend.candles.findLastIndex((row) => String(row.date).slice(0, 10) < eventDate);
+      if (eventIndex < 0) return send(res, 200, { code, eventDate, baseline: null, source: 'Fugle 歷史日 K', comparisons: [{ tradingDays: 5 }, { tradingDays: 20 }], note: '查詢期間沒有事件日前的收盤價。' });
+      const baselineRow = trend.candles[eventIndex], forward = trend.candles.slice(eventIndex + 1).filter((row) => String(row.date).slice(0, 10) >= eventDate);
+      const comparisons = [5, 20].map((tradingDays) => {
+        const row = forward[tradingDays - 1];
+        if (!row) return { tradingDays, close: null, date: '', changePercent: null };
+        const base = Number(baselineRow.close), close = Number(row.close);
+        return { tradingDays, close, date: row.date, changePercent: base > 0 ? (close / base - 1) * 100 : null };
+      });
+      return send(res, 200, { code, name, eventDate, baseline: Number(baselineRow.close), baselineDate: baselineRow.date, source: 'Fugle 歷史日 K', comparisons });
+    }
     if (url.pathname === '/api/international-research' && req.method === 'POST') {
       let user = null;
       if (process.env.NODE_ENV === 'production' || SUPABASE_URL) { user = await requireAuthenticatedUser(req, res); if (!user) return; }
@@ -777,7 +797,7 @@ const server = http.createServer(async (req, res) => {
       ];
       const sourceAvailable = sourceItems.some((item) => item.type === 'news' || item.type === 'filing' || item.type === 'financial');
       if (!sourceAvailable) return send(res, 200, { research, impactAnalysis: { summary: '目前沒有取得可用的海外新聞或財報資料，因此不進行台灣產業與個股推論，避免憑空配對。', industries: [], stocks: [], requestedStocks: validRequestedCodes.map((code) => ({ code, name: marketByCode.get(code).name, market: marketByCode.get(code).market, impact: '尚無資料判斷', reason: '此為你手動指定的檢視股票；目前沒有海外事件來源，不能判定它與該事件有關。', confidence: '低', evidence: [] })), risks: [newsData.reason || 'Google News 目前沒有找到相關文章。', sec.reason || 'SEC 申報資料不可用。'] }, provider });
-      const question = [{ role: 'user', content: `研究海外公司「${companyName}${ticker ? `（${ticker}）` : ''}」的新聞、財報與申報，判斷可能受影響的台灣產業及個股。使用者提供的產業／供應鏈線索：${relation || '無；請勿假設有已驗證的供應鏈關係。'}。使用者另外指定檢視：${validRequestedCodes.join('、') || '無'}。\n\n你會收到來源清單，每項有 ID。只能根據來源清單提供的事實進行推論；新聞標題可能不完整。每個產業或個股的 evidence 必須列出至少一個對應來源 ID（例如 N1、F2、M1），沒有來源依據就不要列入。指定檢視的股票如無證據，請勿放進 stocks。\n\n只輸出 JSON：{"summary":"...","industries":[{"name":"產業","impact":"可能影響","transmission":"具體傳導途徑","confidence":"高/中/低","evidence":["N1"]}],"stocks":[{"code":"上市櫃名單中的四位代號","impact":"可能受惠/可能承壓/雙向影響","reason":"逐檔描述公司業務與事件間的可解釋傳導途徑及不確定性","confidence":"高/中/低","evidence":["N1"]}],"risks":["需查證事項"]}。最多 5 個產業、8 檔股票。只選下方上市櫃名單有列出的股票，代號精確相符。不要為了湊數列股；供應鏈必須清楚標成推論而非已證實事實。不預測確定漲跌或提供買賣指令。` }];
+      const question = [{ role: 'user', content: `研究海外公司「${companyName}${ticker ? `（${ticker}）` : ''}」的新聞、財報與申報，判斷可能受影響的台灣產業及個股。使用者提供的產業／供應鏈線索：${relation || '無；請勿假設有已驗證的供應鏈關係。'}。使用者另外指定檢視：${validRequestedCodes.join('、') || '無'}。\n\n你會收到來源清單，每項有 ID。只能根據來源清單提供的事實進行推論；新聞標題可能不完整。每個產業或個股的 evidence 必須列出至少一個對應來源 ID（例如 N1、F2、M1），沒有來源依據就不要列入。指定檢視的股票如無證據，請勿放進 stocks。\n\n只輸出 JSON：{"summary":"...","industries":[{"name":"產業","impact":"可能影響","transmission":"具體傳導途徑","confidence":"高/中/低","evidence":["N1"]}],"stocks":[{"code":"上市櫃名單中的四位代號","industry":"對應產業","impact":"可能受惠/可能承壓/雙向影響","reason":"逐檔描述公司業務與事件間的可解釋傳導途徑及不確定性","horizon":"短期/中期/長期","confidence":"高/中/低","evidence":["N1"]}],"risks":["需查證事項"]}。最多 5 個產業、8 檔股票。只選下方上市櫃名單有列出的股票，代號精確相符。不要為了湊數列股；供應鏈必須清楚標成推論而非已證實事實。不預測確定漲跌或提供買賣指令。` }];
       const modelContext = {
         foreignCompany: research.foreignCompany,
         ticker: research.ticker,
@@ -805,7 +825,7 @@ const server = http.createServer(async (req, res) => {
       impactAnalysis = {
         summary: cleanText(impactAnalysis.summary, 900),
         industries: (Array.isArray(impactAnalysis.industries) ? impactAnalysis.industries : []).filter((item) => item && typeof item === 'object' && hasValidEvidence(item)).slice(0, 5).map((item) => ({ name: cleanText(item.name, 100), impact: cleanText(item.impact, 400), transmission: cleanText(item.transmission, 400), confidence: ['高', '中', '低'].includes(item.confidence) ? item.confidence : '低', evidence: cleanEvidence(item.evidence) })),
-        stocks: taiwan.map(({ code, name, market, dailyClose, dailyDate, quote, quoteError, ...impact }) => ({ code, name, market, dailyClose, dailyDate, quote, quoteError, impact: cleanText(impact.impact, 40), reason: cleanText(impact.reason, 500), confidence: ['高', '中', '低'].includes(impact.confidence) ? impact.confidence : '低', evidence: cleanEvidence(impact.evidence) })),
+        stocks: taiwan.map(({ code, name, market, dailyClose, dailyDate, quote, quoteError, ...impact }) => ({ code, name, market, dailyClose, dailyDate, quote, quoteError, industry: cleanText(impact.industry, 100), impact: cleanText(impact.impact, 40), reason: cleanText(impact.reason, 500), horizon: cleanText(impact.horizon, 30), confidence: ['高', '中', '低'].includes(impact.confidence) ? impact.confidence : '低', evidence: cleanEvidence(impact.evidence) })),
         requestedStocks: validRequestedCodes.filter((code) => !validStocks.some((item) => String(item.code) === code)).map((code) => { const row = marketByCode.get(code); return { code, name: row.name, market: row.market, dailyClose: row.price, dailyDate: row.date, impact: '尚無足夠證據', reason: '這是你指定檢視的股票；已取得的新聞與申報來源不足以確認它和本次事件的關聯。', confidence: '低', evidence: [] }; }),
         risks: (Array.isArray(impactAnalysis.risks) ? impactAnalysis.risks : []).map((risk) => cleanText(risk, 300)).filter(Boolean).slice(0, 8)
       };
