@@ -584,8 +584,10 @@
       ollamaAssistantOption.textContent = assistantProviderAvailability.ollama ? `Ollama（${$('assistantBadge').dataset.ollamaModel}）` : 'Ollama（尚未設定）';
       $('globalAiProvider').querySelector('option[value="ollama"]').disabled = !assistantProviderAvailability.ollama;
       $('globalAiProvider').querySelector('option[value="gemini"]').disabled = !assistantProviderAvailability.gemini;
-      if (!assistantProviderAvailability[$('globalAiProvider').value]) $('globalAiProvider').value = assistantProviderAvailability.ollama ? 'ollama' : 'gemini';
-      if (!assistantProviderAvailability.gemini) $('globalResearchStatus').textContent = 'Gemini 尚未在伺服器設定有效的 GEMINI_API_KEY，因此目前無法選用。請到 Render 的端股 Web Service → Environment 設定金鑰，再重新部署。';
+      if (!assistantProviderAvailability[$('globalAiProvider').value]) $('globalAiProvider').value = assistantProviderAvailability.gemini ? 'gemini' : 'ollama';
+      $('globalResearchStatus').textContent = assistantProviderAvailability.gemini
+        ? '已偵測到 Gemini API 金鑰，研究功能預設使用 Gemini 3.8 Flash。輸入國外公司與台股代號即可整理新聞、SEC 財報及 Fugle 趨勢。'
+        : 'Gemini 尚未在伺服器設定有效的 GEMINI_API_KEY，因此目前無法選用。請到 Render 的端股 Web Service → Environment 設定金鑰，再重新部署。';
       const ollamaTopupOption = $('topupMode').querySelector('option[value="ollama"]');
       ollamaTopupOption.disabled = !assistantProviderAvailability.ollama;
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
