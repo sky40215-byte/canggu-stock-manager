@@ -63,10 +63,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (!Array.isArray(body.messages) || body.messages.length > 11 ||
+    const messageChars = Array.isArray(body.messages)
+      ? body.messages.reduce((total, message) => total + (typeof message?.content === 'string' ? message.content.length : 0), 0)
+      : Infinity;
+    if (!Array.isArray(body.messages) || body.messages.length > 11 || messageChars > 48000 ||
         body.messages.some((m) =>
           !['system', 'user', 'assistant'].includes(m?.role) ||
-          typeof m?.content !== 'string' || m.content.length > 2000
+          typeof m?.content !== 'string' || m.content.length > 24000
         )) {
       return send(res, 400, { error: 'Invalid messages' });
     }

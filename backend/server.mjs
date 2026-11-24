@@ -726,7 +726,15 @@ const server = http.createServer(async (req, res) => {
       }
       const research = { foreignCompany: companyName, ticker, relation: relation || '使用者尚未填寫關聯說明，需自行查證產業／供應鏈關係。', headlines, sec, taiwan, generatedAt: new Date().toISOString() };
       const question = [{ role: 'user', content: '請用繁體中文整理這次研究，分成「國外公司事件」「財報與申報」「對台股的可能傳導」「台股近期行情」「仍需查證的風險」五節。只根據提供的資料；新聞標題不能當成已確認事實。明確區分資料事實與推論，解釋傳導關係是使用者提供而不是你驗證的。台股走勢只描述已提供的 Fugle 價格與日 K 指標，不得聲稱事件造成股價變動，不得給出必然漲跌、買賣價或個人化下單指令。沒有資料要明說。' }];
-      const answer = await askAssistant(question, '國際事件與台股關聯研究', JSON.stringify(research), provider);
+      const modelContext = {
+        foreignCompany: research.foreignCompany,
+        ticker: research.ticker,
+        relation: research.relation,
+        headlines: headlines.map(({ title, publishedAt, source }) => ({ title, publishedAt, source })),
+        sec: { available: sec.available, company: sec.company, financials: sec.financials, filings: sec.filings?.slice(0, 6).map(({ form, date, period, description }) => ({ form, date, period, description })) },
+        taiwan: taiwan.map(({ code, quote, quoteError, trend, trendError }) => ({ code, quote: quote ? { name: quote.name, lastPrice: quote.lastPrice, closePrice: quote.closePrice, previousClose: quote.previousClose, change: quote.change, changePercent: quote.changePercent, date: quote.date } : null, quoteError, trend, trendError }))
+      };
+      const answer = await askAssistant(question, '國際事件與台股關聯研究', JSON.stringify(modelContext), provider);
       return send(res, 200, { research, answer, provider });
     }
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
