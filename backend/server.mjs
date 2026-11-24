@@ -398,19 +398,35 @@ function fugleAssistantAnswer(marketContext) {
   return lines.join('\n');
 }
 async function askGemini(messages, topic, marketContext = '') {
-  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
-    method: 'POST', signal: AbortSignal.timeout(30000),
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: assistantSystemPrompt(topic, marketContext) }] },
-      contents: messages.map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
-      generationConfig: { maxOutputTokens: 900, temperature: 0.5 }
-    })
+  const requestBody = JSON.stringify({
+    systemInstruction: { parts: [{ text: assistantSystemPrompt(topic, marketContext) }] },
+    contents: messages.map((item) => ({ role: item.role === 'assistant' ? 'model' : 'user', parts: [{ text: item.content }] })),
+    generationConfig: { maxOutputTokens: 900, temperature: 0.5 }
   });
-  const data = await response.json().catch(() => ({}));
+  let response, data = {};
+  // 503 means the selected model is temporarily overloaded. Retry briefly before
+  // reporting the upstream status so transient capacity spikes do not fail immediately.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
+        method: 'POST', signal: AbortSignal.timeout(30000),
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: requestBody
+      });
+    } catch (error) {
+      throw Object.assign(new Error('目前無法連線到 Gemini。請稍後再試；也可以切換到 Ollama。'), { status: 503, cause: error });
+    }
+    data = await response.json().catch(() => ({}));
+    if (response.status !== 503 || attempt === 2) break;
+    const retryAfter = Number(response.headers.get('retry-after'));
+    const delayMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? Math.min(retryAfter * 1000, 5000)
+      : 800 * (2 ** attempt) + Math.floor(Math.random() * 300);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+  }
   if (!response.ok) {
     const detail = String(data.error?.message || '').replace(/[\r\n]+/g, ' ').slice(0, 260);
-    const status = response.status === 429 ? 429 : 502;
+    const status = response.status === 429 || response.status === 503 ? response.status : 502;
     const message = response.status === 400
       ? `Gemini 請求格式或模型設定有誤（400）${detail ? `：${detail}` : '；請確認目前使用的模型與 API 權限。'}`
       : response.status === 401 || response.status === 403
@@ -419,7 +435,9 @@ async function askGemini(messages, topic, marketContext = '') {
           ? `Gemini 找不到指定模型（404）${detail ? `：${detail}` : '；請確認模型名稱是否仍可使用。'}`
           : response.status === 429
             ? `Gemini 配額或請求頻率已達限制（429）${detail ? `：${detail}` : '；請稍後再試或查看 API 配額。'}`
-            : `Gemini 暫時回應錯誤（${response.status}）${detail ? `：${detail}` : '；請稍後再試。'}`;
+            : response.status === 503
+              ? `Gemini 3.8 Flash 目前忙碌（503），系統已自動重試仍未成功。這是 Gemini 服務暫時過載，請稍後重送，或改選 Ollama。${detail ? `（${detail}）` : ''}`
+              : `Gemini 暫時回應錯誤（${response.status}）${detail ? `：${detail}` : '；請稍後再試。'}`;
     throw Object.assign(new Error(message), { status });
   }
   const answer = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim();
