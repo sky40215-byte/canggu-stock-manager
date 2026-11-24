@@ -385,7 +385,7 @@
     if (!$('globalResearchConsent').checked) { $('globalResearchStatus').textContent = '請先閱讀並勾選資料傳送同意。'; $('globalResearchConsent').focus(); return; }
     const button = $('globalResearchSubmit'); button.disabled = true; button.textContent = '查詢與整理中…'; $('globalResearchResult').hidden = true;
     $('globalResearchConsent').checked = false;
-    $('globalResearchStatus').textContent = '正在搜尋海外新聞、SEC 申報資料及 Fugle 台股行情；不同來源可能需要一些時間。';
+    $('globalResearchStatus').textContent = '正在搜尋海外新聞與申報資料，並比對上市櫃公司名單分析可能受影響的產業及個股。';
     try {
       const { data: sessionData } = await supabaseClient?.auth.getSession() || {};
       const headers = { 'Content-Type': 'application/json' };
@@ -397,15 +397,21 @@
       const filings = (sec.filings || []).map((filing) => `<li><a href="${esc(filing.url)}" target="_blank" rel="noopener noreferrer">${esc(filing.form)} · 申報 ${esc(filing.date)}${filing.period ? ` · 期間 ${esc(filing.period)}` : ''}</a>${filing.description ? `<small>${esc(filing.description)}</small>` : ''}</li>`).join('');
       const financials = (sec.financials || []).map((metric) => `<span class="global-metric"><small>${esc(metric.label)} · ${esc(metric.end)} · ${esc(metric.form)}</small><b>${Number(metric.value).toLocaleString('zh-TW')} ${esc(metric.unit)}</b></span>`).join('');
       const newsItems = (research.headlines || []).map((item) => `<li><a href="${esc(item.link)}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a><small>${esc(item.publishedAt || '')} · ${esc(item.source || 'Google News')}</small></li>`).join('');
-      const twItems = (research.taiwan || []).map((item) => {
-        const quote = item.quote, trend = item.trend;
-        const price = quote ? Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose) : null;
-        return `<article class="global-tw-stock"><b>台股 ${esc(item.code)}</b><span>${Number.isFinite(price) && price > 0 ? `Fugle ${money(price)} · ${esc(quote.date || '')}` : esc(item.quoteError || '目前沒有可用即時報價')}</span><small>${trend ? `${esc(trend.date || '')} 收盤 ${money(trend.close)} · 5 日 ${trend.change5dPercent == null ? '資料不足' : `${trend.change5dPercent >= 0 ? '+' : ''}${trend.change5dPercent.toFixed(2)}%`} · RSI ${trend.rsi14 == null ? '—' : Number(trend.rsi14).toFixed(1)} · SMA20 ${trend.sma20 == null ? '—' : Number(trend.sma20).toFixed(2)} / SMA60 ${trend.sma60 == null ? '—' : Number(trend.sma60).toFixed(2)}` : esc(item.trendError || '歷史趨勢資料不足')}</small></article>`;
+      const analysis = data.impactAnalysis || {}, impactStocks = analysis.stocks || [], industries = analysis.industries || [];
+      const directionClass = (value) => value === '可能受惠' ? 'positive' : value === '可能承壓' ? 'negative' : 'uncertain';
+      const industryCards = industries.map((item) => `<article class="global-impact-industry"><header><b>${esc(item.name || '未分類產業')}</b><span>信心${esc(item.confidence || '未評估')}</span></header><p>${esc(item.impact || '')}</p><small>可能傳導：${esc(item.transmission || '資料不足')}</small>${Array.isArray(item.evidence) && item.evidence.length ? `<small>資料線索：${esc(item.evidence.join('、'))}</small>` : ''}</article>`).join('');
+      const impactStockCards = impactStocks.map((item) => {
+        const quote = item.quote, price = quote ? Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose) : Number(item.dailyClose);
+        const quoteDate = quote?.date || quote?.lastUpdated || item.dailyDate || '';
+        const priceLabel = Number.isFinite(price) && price > 0 ? `NT$ ${price.toLocaleString('zh-TW')} · ${esc(quoteDate)}${quote ? ' · Fugle' : ' · 最近收盤'}` : esc(item.quoteError || '目前無行情');
+        return `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge ${directionClass(item.impact)}">${esc(item.impact || '影響不明')}</span></header><small>${esc(item.market || '')} · ${priceLabel} · 信心${esc(item.confidence || '未評估')}</small><p>${esc(item.reason || '')}</p>${Array.isArray(item.evidence) && item.evidence.length ? `<small>資料線索：${esc(item.evidence.join('、'))}</small>` : ''}</article>`;
       }).join('');
-      $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${esc(research.ticker)}）` : ''} → 台股 ${esc((research.taiwan || []).map((item) => item.code).join('、'))}</b><p>關聯說明：${esc(research.relation)}</p></div><section><h3>AI 研究整理 · ${esc(data.provider === 'ollama' ? 'Ollama' : 'Gemini')}</h3><pre class="global-ai-answer">${esc(data.answer || '')}</pre></section><section><h3>台股行情與技術趨勢</h3><div class="global-tw-list">${twItems || '<p>沒有台股資料。</p>'}</div></section><section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>新聞來源目前沒有回傳結果。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股趨勢為 Fugle。</small>`;
+      const risks = (analysis.risks || []).map((risk) => `<li>${esc(risk)}</li>`).join('');
+      const invalidCodes = (research.unrecognizedCodes || []).length ? `<p class="global-source-note">以下代號未出現在目前上市櫃個股名單：${esc(research.unrecognizedCodes.join('、'))}</p>` : '';
+      $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${esc(research.ticker)}）` : ''} · 國際事件研究</b><p>${esc(analysis.summary || '模型未提供摘要。')}</p><small>分析方式：${esc(data.provider === 'ollama' ? 'Ollama' : 'Gemini 3.8 Flash')} · 個股關聯為研究推論</small></div><section><h3>可能受影響的產業 · ${industries.length} 項</h3><div class="global-impact-grid">${industryCards || '<p>目前沒有足夠資料判斷受影響產業。</p>'}</div></section><section><h3>可能相關的台股 · ${impactStocks.length} 檔</h3><div class="global-impact-grid">${impactStockCards || '<p>目前沒有足夠證據列出相關個股；請檢視下方新聞與申報資料。</p>'}</div>${invalidCodes}</section>${risks ? `<section><h3>仍需查證</h3><ul class="global-links">${risks}</ul></section>` : ''}<section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>新聞來源目前沒有回傳結果。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股名單為證交所與櫃買中心，報價為 Fugle。</small>`;
       $('globalResearchResult').hidden = false; $('globalResearchStatus').textContent = '研究資料已整理。請先核對原始新聞、申報文件及台股關聯。';
     } catch (error) { $('globalResearchStatus').textContent = error.message || '查詢失敗，請稍後再試。'; }
-    finally { button.disabled = false; button.textContent = '整理國際事件'; }
+    finally { button.disabled = false; button.textContent = '分析產業與個股'; }
   });
   function openHolding(item) {
     $('holdingForm').reset(); $('holdingId').value = item?.id || ''; $('holdingDialogTitle').textContent = item ? '編輯持股' : '新增持股';
@@ -585,9 +591,14 @@
       $('globalAiProvider').querySelector('option[value="ollama"]').disabled = !assistantProviderAvailability.ollama;
       $('globalAiProvider').querySelector('option[value="gemini"]').disabled = !assistantProviderAvailability.gemini;
       if (!assistantProviderAvailability[$('globalAiProvider').value]) $('globalAiProvider').value = assistantProviderAvailability.gemini ? 'gemini' : 'ollama';
-      $('globalResearchStatus').textContent = assistantProviderAvailability.gemini
-        ? '已偵測到 Gemini API 金鑰，研究功能預設使用 Gemini 3.8 Flash。輸入國外公司與台股代號即可整理新聞、SEC 財報及 Fugle 趨勢。'
-        : 'Gemini 尚未在伺服器設定有效的 GEMINI_API_KEY，因此目前無法選用。請到 Render 的端股 Web Service → Environment 設定金鑰，再重新部署。';
+      const updateGlobalResearchStatus = () => {
+        const provider = $('globalAiProvider').value;
+        $('globalResearchStatus').textContent = provider === 'gemini'
+          ? assistantProviderAvailability.gemini ? 'Gemini 3.8 Flash 已設定。輸入海外公司名稱即可分析可能受影響的台灣產業與個股；台股代號可以留白。' : 'Gemini 尚未設定 GEMINI_API_KEY，請到 Render 的端股 Web Service → Environment 設定金鑰，再重新部署。'
+          : assistantProviderAvailability.ollama ? 'Ollama 已設定。輸入海外公司名稱即可分析可能受影響的產業與個股；本機模型會使用成交較活躍的上市櫃公司名單。' : 'Ollama 尚未設定或目前無法使用，請選擇已設定的 Gemini。';
+      };
+      $('globalAiProvider').addEventListener('change', updateGlobalResearchStatus);
+      updateGlobalResearchStatus();
       const ollamaTopupOption = $('topupMode').querySelector('option[value="ollama"]');
       ollamaTopupOption.disabled = !assistantProviderAvailability.ollama;
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
