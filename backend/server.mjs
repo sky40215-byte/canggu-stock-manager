@@ -409,8 +409,18 @@ async function askGemini(messages, topic, marketContext = '') {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const status = response.status === 429 ? 429 : response.status >= 500 ? 502 : 502;
-    throw Object.assign(new Error(response.status === 429 ? '助理目前的服務額度已用完，請稍後再試。' : '助理服務暫時無法回答，請稍後再試。'), { status });
+    const detail = String(data.error?.message || '').replace(/[\r\n]+/g, ' ').slice(0, 260);
+    const status = response.status === 429 ? 429 : 502;
+    const message = response.status === 400
+      ? `Gemini 請求格式或模型設定有誤（400）${detail ? `：${detail}` : '；請確認目前使用的模型與 API 權限。'}`
+      : response.status === 401 || response.status === 403
+        ? `Gemini API 金鑰無效或未授權（${response.status}）${detail ? `：${detail}` : '；請確認 Render 的 GEMINI_API_KEY 與 Google AI Studio API 權限。'}`
+        : response.status === 404
+          ? `Gemini 找不到指定模型（404）${detail ? `：${detail}` : '；請確認模型名稱是否仍可使用。'}`
+          : response.status === 429
+            ? `Gemini 配額或請求頻率已達限制（429）${detail ? `：${detail}` : '；請稍後再試或查看 API 配額。'}`
+            : `Gemini 暫時回應錯誤（${response.status}）${detail ? `：${detail}` : '；請稍後再試。'}`;
+    throw Object.assign(new Error(message), { status });
   }
   const answer = data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim();
   if (!answer) throw Object.assign(new Error('助理沒有產生回答，請換個方式提問。'), { status: 502 });
