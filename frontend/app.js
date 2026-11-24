@@ -940,7 +940,56 @@
   workspaceFeatureIds.forEach((id) => { const element = $(id); if (element?.parentElement) workspaceHome.set(id, { parent: element.parentElement, next: element.nextElementSibling }); });
   let workspaceOpenPages = [];
   try { workspaceOpenPages = [...new Set(JSON.parse(localStorage.getItem('duanguWorkspacePages') || '[]').filter((id) => workspaceFeatureIds.includes(id)))]; } catch { workspaceOpenPages = []; }
+  let workspacePositions = {}, workspaceZIndex = 1;
+  try { workspacePositions = JSON.parse(localStorage.getItem('duanguWorkspacePositions') || '{}') || {}; } catch { workspacePositions = {}; }
   const persistWorkspace = () => { try { localStorage.setItem('duanguWorkspacePages', JSON.stringify(workspaceOpenPages)); } catch { /* Workspace layout remains usable without browser storage. */ } };
+  function saveWorkspacePosition(panel) {
+    const width = workspaceGrid.clientWidth || 1;
+    if (width < 700) return;
+    workspacePositions[panel.dataset.page] = { x: panel.offsetLeft / width, y: panel.offsetTop, w: panel.offsetWidth / width };
+    try { localStorage.setItem('duanguWorkspacePositions', JSON.stringify(workspacePositions)); } catch { /* Position is still applied for this session. */ }
+  }
+  function updateWorkspaceCanvasHeight() {
+    const bottom = [...workspaceGrid.querySelectorAll('.workspace-panel')].reduce((max, panel) => Math.max(max, panel.offsetTop + panel.offsetHeight), 0);
+    workspaceGrid.style.height = `${Math.max(bottom + 18, 0)}px`;
+  }
+  function enablePanelDragging(panel, heading, resizeHandle) {
+    let operation = null;
+    panel.addEventListener('pointerdown', () => { workspaceZIndex += 1; panel.style.zIndex = String(workspaceZIndex); });
+    heading.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('button')) return;
+      event.preventDefault();
+      operation = { type: 'move', pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: panel.offsetLeft, top: panel.offsetTop };
+      heading.classList.add('is-dragging');
+      heading.setPointerCapture(event.pointerId);
+    });
+    resizeHandle.addEventListener('pointerdown', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      operation = { type: 'resize', pointerId: event.pointerId, startX: event.clientX, width: panel.offsetWidth };
+      resizeHandle.setPointerCapture(event.pointerId);
+    });
+    const move = (event) => {
+      if (!operation || operation.pointerId !== event.pointerId) return;
+      const canvasWidth = workspaceGrid.clientWidth || 1;
+      if (operation.type === 'move') {
+        const left = Math.max(0, Math.min(canvasWidth - panel.offsetWidth, operation.left + event.clientX - operation.startX));
+        panel.style.left = `${left / canvasWidth * 100}%`;
+        panel.style.top = `${Math.max(0, operation.top + event.clientY - operation.startY)}px`;
+      } else {
+        const maxWidth = Math.max(220, canvasWidth - panel.offsetLeft);
+        const minWidth = Math.min(300, maxWidth);
+        const width = Math.max(minWidth, Math.min(maxWidth, operation.width + event.clientX - operation.startX));
+        panel.style.width = `${width / canvasWidth * 100}%`;
+      }
+      updateWorkspaceCanvasHeight();
+    };
+    const finish = (event) => {
+      if (!operation || operation.pointerId !== event.pointerId) return;
+      operation = null; heading.classList.remove('is-dragging'); saveWorkspacePosition(panel); updateWorkspaceCanvasHeight();
+    };
+    heading.addEventListener('pointermove', move); heading.addEventListener('pointerup', finish); heading.addEventListener('pointercancel', finish);
+    resizeHandle.addEventListener('pointermove', move); resizeHandle.addEventListener('pointerup', finish); resizeHandle.addEventListener('pointercancel', finish);
+  }
   function restoreWorkspacePanels() {
     [...workspaceGrid.querySelectorAll('.workspace-panel')].forEach((panel) => {
       const id = panel.dataset.page, element = $(id), home = workspaceHome.get(id);
@@ -955,18 +1004,40 @@
   }
   function renderWorkspacePanels() {
     restoreWorkspacePanels();
+    const canvasWidth = workspaceGrid.clientWidth || 1, narrowCanvas = canvasWidth < 700;
+    const columnBottoms = [0, 0];
     workspaceOpenPages.forEach((id) => {
       const element = $(id), home = workspaceHome.get(id);
       if (!element || !home) return;
       const panel = document.createElement('article'); panel.className = 'workspace-panel'; panel.dataset.page = id;
       const heading = document.createElement('header'); heading.className = 'workspace-panel-heading';
-      const title = document.createElement('b'); title.textContent = pageTitles[id];
+      const title = document.createElement('b'); title.textContent = '拖曳此列移動';
       const close = document.createElement('button'); close.type = 'button'; close.className = 'workspace-panel-close'; close.setAttribute('aria-label', `關閉${pageTitles[id]}`); close.textContent = '×';
       close.addEventListener('click', () => { workspaceOpenPages = workspaceOpenPages.filter((item) => item !== id); persistWorkspace(); renderWorkspacePanels(); updateWorkspaceControls(); });
-      heading.append(title, close); panel.append(heading); workspaceGrid.append(panel); panel.append(element); element.hidden = false;
+      heading.append(title, close);
+      const resizeHandle = document.createElement('button'); resizeHandle.type = 'button'; resizeHandle.className = 'workspace-panel-resize'; resizeHandle.setAttribute('aria-label', `拖曳調整${pageTitles[id]}視窗大小`); resizeHandle.title = '拖曳調整大小'; resizeHandle.textContent = '◢';
+      const saved = workspacePositions[id];
+      if (!narrowCanvas && saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y)) && Number.isFinite(Number(saved.w))) {
+        const widthRatio = Math.max(narrowCanvas ? 0.97 : 0.32, Math.min(narrowCanvas ? 0.97 : 0.98, Number(saved.w)));
+        const xRatio = Math.max(0, Math.min(1 - widthRatio, Number(saved.x)));
+        panel.style.left = `${xRatio * 100}%`; panel.style.top = `${Math.max(0, Number(saved.y))}px`; panel.style.width = `${widthRatio * 100}%`;
+      } else {
+        const column = narrowCanvas ? 0 : columnBottoms[0] <= columnBottoms[1] ? 0 : 1;
+        const widthRatio = narrowCanvas ? 0.97 : 0.49;
+        panel.style.left = `${column ? 51 : 0}%`; panel.style.top = `${columnBottoms[column]}px`; panel.style.width = `${widthRatio * 100}%`;
+      }
+      panel.append(heading, element, resizeHandle); workspaceGrid.append(panel); element.hidden = false;
+      enablePanelDragging(panel, heading, resizeHandle);
+      const column = narrowCanvas || panel.offsetLeft < canvasWidth * 0.5 ? 0 : 1;
+      columnBottoms[column] = Math.max(columnBottoms[column], panel.offsetTop + panel.offsetHeight + 14);
     });
     updateWorkspaceControls();
-    requestAnimationFrame(() => { if (trendData && workspaceOpenPages.includes('trendAnalysis')) drawTrendChart(trendData.candles); if (heldStockData && workspaceOpenPages.includes('holdingAnalysis')) drawHoldingCandles(heldStockData.candles); });
+    requestAnimationFrame(() => {
+      if (trendData && workspaceOpenPages.includes('trendAnalysis')) drawTrendChart(trendData.candles);
+      if (heldStockData && workspaceOpenPages.includes('holdingAnalysis')) drawHoldingCandles(heldStockData.candles);
+      workspaceGrid.querySelectorAll('.workspace-panel').forEach(saveWorkspacePosition);
+      updateWorkspaceCanvasHeight();
+    });
   }
   const workspaceSelect = $('workspaceFeatureSelect');
   workspaceFeatureIds.forEach((id) => { const option = document.createElement('option'); option.value = id; option.textContent = pageTitles[id]; workspaceSelect.append(option); });
@@ -976,6 +1047,20 @@
     workspaceOpenPages.push(id); persistWorkspace(); workspaceSelect.value = ''; renderWorkspacePanels();
   });
   $('workspaceReset').addEventListener('click', () => { workspaceOpenPages = []; persistWorkspace(); renderWorkspacePanels(); });
+  window.addEventListener('resize', () => {
+    if ($('workspace').hidden) return;
+    const width = workspaceGrid.clientWidth || 1, narrow = width < 700;
+    let top = 0;
+    [...workspaceGrid.querySelectorAll('.workspace-panel')].forEach((panel) => {
+      const saved = workspacePositions[panel.dataset.page];
+      if (narrow) { panel.style.left = '0%'; panel.style.width = '97%'; panel.style.top = `${top}px`; top += panel.offsetHeight + 14; }
+      else if (saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.w))) {
+        const panelWidth = Math.max(0.32, Math.min(0.98, Number(saved.w))), left = Math.max(0, Math.min(1 - panelWidth, Number(saved.x)));
+        panel.style.left = `${left * 100}%`; panel.style.width = `${panelWidth * 100}%`; panel.style.top = `${Math.max(0, Number(saved.y) || 0)}px`;
+      }
+    });
+    updateWorkspaceCanvasHeight();
+  });
   function showPage(page, updateHash = false) {
     if (!pageTitles[page]) page = 'overview';
     if (page !== 'workspace') restoreWorkspacePanels();
