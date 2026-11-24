@@ -380,6 +380,33 @@
     } catch (error) { $('newsSourceLinks').innerHTML = ''; renderNews([], error.message || '新聞來源暫時無法連線，請稍後重試。'); }
     finally { button.disabled = false; button.textContent = '⌕ 搜尋新聞'; }
   }
+  $('globalResearchForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!$('globalResearchConsent').checked) { $('globalResearchStatus').textContent = '請先閱讀並勾選資料傳送同意。'; $('globalResearchConsent').focus(); return; }
+    const button = $('globalResearchSubmit'); button.disabled = true; button.textContent = '查詢與整理中…'; $('globalResearchResult').hidden = true;
+    $('globalResearchConsent').checked = false;
+    $('globalResearchStatus').textContent = '正在搜尋海外新聞、SEC 申報資料及 Fugle 台股行情；不同來源可能需要一些時間。';
+    try {
+      const { data: sessionData } = await supabaseClient?.auth.getSession() || {};
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionData?.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
+      const response = await fetch('/api/international-research', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ companyName: $('globalCompany').value.trim(), ticker: $('globalTicker').value.trim(), taiwanCodes: $('globalTaiwanCodes').value.trim(), relation: $('globalRelation').value.trim(), provider: $('globalAiProvider').value, aiConsent: true }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '國際事件查詢失敗，請稍後重試。');
+      const research = data.research || {}, sec = research.sec || {};
+      const filings = (sec.filings || []).map((filing) => `<li><a href="${esc(filing.url)}" target="_blank" rel="noopener noreferrer">${esc(filing.form)} · 申報 ${esc(filing.date)}${filing.period ? ` · 期間 ${esc(filing.period)}` : ''}</a>${filing.description ? `<small>${esc(filing.description)}</small>` : ''}</li>`).join('');
+      const financials = (sec.financials || []).map((metric) => `<span class="global-metric"><small>${esc(metric.label)} · ${esc(metric.end)} · ${esc(metric.form)}</small><b>${Number(metric.value).toLocaleString('zh-TW')} ${esc(metric.unit)}</b></span>`).join('');
+      const newsItems = (research.headlines || []).map((item) => `<li><a href="${esc(item.link)}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a><small>${esc(item.publishedAt || '')} · ${esc(item.source || 'Google News')}</small></li>`).join('');
+      const twItems = (research.taiwan || []).map((item) => {
+        const quote = item.quote, trend = item.trend;
+        const price = quote ? Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose) : null;
+        return `<article class="global-tw-stock"><b>台股 ${esc(item.code)}</b><span>${Number.isFinite(price) && price > 0 ? `Fugle ${money(price)} · ${esc(quote.date || '')}` : esc(item.quoteError || '目前沒有可用即時報價')}</span><small>${trend ? `${esc(trend.date || '')} 收盤 ${money(trend.close)} · 5 日 ${trend.change5dPercent == null ? '資料不足' : `${trend.change5dPercent >= 0 ? '+' : ''}${trend.change5dPercent.toFixed(2)}%`} · RSI ${trend.rsi14 == null ? '—' : Number(trend.rsi14).toFixed(1)} · SMA20 ${trend.sma20 == null ? '—' : Number(trend.sma20).toFixed(2)} / SMA60 ${trend.sma60 == null ? '—' : Number(trend.sma60).toFixed(2)}` : esc(item.trendError || '歷史趨勢資料不足')}</small></article>`;
+      }).join('');
+      $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${esc(research.ticker)}）` : ''} → 台股 ${esc((research.taiwan || []).map((item) => item.code).join('、'))}</b><p>關聯說明：${esc(research.relation)}</p></div><section><h3>AI 研究整理 · ${esc(data.provider === 'ollama' ? 'Ollama' : 'Gemini')}</h3><pre class="global-ai-answer">${esc(data.answer || '')}</pre></section><section><h3>台股行情與技術趨勢</h3><div class="global-tw-list">${twItems || '<p>沒有台股資料。</p>'}</div></section><section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>新聞來源目前沒有回傳結果。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股趨勢為 Fugle。</small>`;
+      $('globalResearchResult').hidden = false; $('globalResearchStatus').textContent = '研究資料已整理。請先核對原始新聞、申報文件及台股關聯。';
+    } catch (error) { $('globalResearchStatus').textContent = error.message || '查詢失敗，請稍後再試。'; }
+    finally { button.disabled = false; button.textContent = '整理國際事件'; }
+  });
   function openHolding(item) {
     $('holdingForm').reset(); $('holdingId').value = item?.id || ''; $('holdingDialogTitle').textContent = item ? '編輯持股' : '新增持股';
     if (item) { $('stockName').value = item.name; $('shares').value = item.shares; $('avgCost').value = item.cost; $('currentPrice').value = item.price; $('targetWeight').value = item.targetWeight || ''; }
@@ -555,6 +582,9 @@
       [...select.options].forEach((option) => { option.disabled = !assistantProviderAvailability[option.value]; });
       const ollamaAssistantOption = select.querySelector('option[value="ollama"]');
       ollamaAssistantOption.textContent = assistantProviderAvailability.ollama ? `Ollama（${$('assistantBadge').dataset.ollamaModel}）` : 'Ollama（尚未設定）';
+      $('globalAiProvider').querySelector('option[value="ollama"]').disabled = !assistantProviderAvailability.ollama;
+      $('globalAiProvider').querySelector('option[value="gemini"]').disabled = !assistantProviderAvailability.gemini;
+      if (!assistantProviderAvailability[$('globalAiProvider').value]) $('globalAiProvider').value = assistantProviderAvailability.ollama ? 'ollama' : 'gemini';
       const ollamaTopupOption = $('topupMode').querySelector('option[value="ollama"]');
       ollamaTopupOption.disabled = !assistantProviderAvailability.ollama;
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
@@ -883,7 +913,7 @@
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', assistant: '詢問助理', references: '研究資料' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究資料' };
   function showPage(page, updateHash = false) {
     if (!pageTitles[page]) page = 'overview';
     const mainSections = [...document.querySelectorAll('.main-content > section')];
@@ -903,7 +933,7 @@
     document.querySelector('.breadcrumb b').textContent = pageTitles[page];
     if (updateHash && location.hash !== `#${page}`) history.pushState(null, '', `#${page}`);
     if (page === 'overview' && servicesStarted && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (window.scrollY > 0) window.scrollTo(0, 0);
   }
   document.querySelector('.sidebar nav').addEventListener('click', (event) => { const link = event.target.closest('.nav-link'); if (!link) return; event.preventDefault(); showPage(link.hash.slice(1), true); });
   document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('overview', true); });

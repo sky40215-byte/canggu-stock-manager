@@ -26,6 +26,7 @@ const OLLAMA_PROXY_TOKEN = process.env.OLLAMA_PROXY_TOKEN || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const fundamentalsCache = new Map();
+const secTickerCache = { expiresAt: 0, data: null };
 const assistantRateLimits = new Map();
 const fugleHistoryRequests = [];
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -137,6 +138,44 @@ async function news(url) {
     return title && validLink(link) ? { title, link, publishedAt, source, sourceUrl: validLink(sourceUrl) ? sourceUrl : '', searchLink } : null;
   }).filter(Boolean);
   return { items: items.slice(0, 20), updatedAt: new Date().toISOString() };
+}
+async function secCompanyResearch(ticker) {
+  if (!ticker) return { available: false, reason: '未輸入美股代號，略過 SEC 財報查詢。', filings: [], financials: [] };
+  const normalized = ticker.toUpperCase();
+  if (!secTickerCache.data || Date.now() > secTickerCache.expiresAt) {
+    secTickerCache.data = await fetchJson('https://www.sec.gov/files/company_tickers.json', { 'User-Agent': 'DuanguStockManager/1.0 https://github.com/sky40215-byte/canggu-stock-manager' });
+    secTickerCache.expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+  }
+  const company = Object.values(secTickerCache.data).find((item) => String(item.ticker || '').toUpperCase() === normalized);
+  if (!company) return { available: false, reason: `SEC EDGAR 尚未找到 ${normalized} 的公司資料。`, filings: [], financials: [] };
+  const cik = String(company.cik_str).padStart(10, '0'), cikNumber = String(company.cik_str);
+  const headers = { 'User-Agent': 'DuanguStockManager/1.0 https://github.com/sky40215-byte/canggu-stock-manager' };
+  const [submissions, facts] = await Promise.all([
+    fetchJson(`https://data.sec.gov/submissions/CIK${cik}.json`, headers),
+    fetchJson(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, headers)
+  ]);
+  const recent = submissions.filings?.recent || {}, filings = [];
+  for (let index = 0; index < (recent.form || []).length && filings.length < 8; index++) {
+    const form = recent.form[index];
+    if (!['10-K', '10-Q', '8-K', '20-F', '6-K'].includes(form)) continue;
+    const accession = recent.accessionNumber[index], document = recent.primaryDocument[index];
+    filings.push({ form, date: recent.filingDate[index], period: recent.reportDate[index] || '', description: recent.primaryDocDescription[index] || '', url: `https://www.sec.gov/Archives/edgar/data/${cikNumber}/${accession.replace(/-/g, '')}/${document}` });
+  }
+  const usGaap = facts.facts?.['us-gaap'] || {};
+  const metricTags = [
+    ['營收', ['RevenueFromContractWithCustomerExcludingAssessedTax', 'Revenues', 'SalesRevenueNet']],
+    ['淨利', ['NetIncomeLoss', 'ProfitLoss']],
+    ['總資產', ['Assets']]
+  ];
+  const financials = metricTags.map(([label, tags]) => {
+    const tagName = tags.find((tag) => usGaap[tag]?.units);
+    if (!tagName) return null;
+    const metric = usGaap[tagName], unit = Object.keys(metric.units)[0];
+    const values = Object.values(metric.units[unit]).filter((row) => row.form && ['10-K', '10-Q', '20-F'].includes(row.form) && row.end && Number.isFinite(Number(row.val))).sort((a, b) => String(b.end).localeCompare(String(a.end)));
+    const latest = values[0];
+    return latest ? { label, value: Number(latest.val), unit, end: latest.end, form: latest.form, sourceTag: tagName } : null;
+  }).filter(Boolean);
+  return { available: true, company: company.title, ticker: normalized, cik, filings, financials, source: 'SEC EDGAR', updatedAt: new Date().toISOString() };
 }
 function average(values) { return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null; }
 function ema(values, period) {
@@ -655,6 +694,40 @@ const server = http.createServer(async (req, res) => {
       const query = [stockQuery, keyword].filter(Boolean).join(' ');
       const feed = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
       return send(res, 200, await news(feed));
+    }
+    if (url.pathname === '/api/international-research' && req.method === 'POST') {
+      let user = null;
+      if (process.env.NODE_ENV === 'production' || SUPABASE_URL) { user = await requireAuthenticatedUser(req, res); if (!user) return; }
+      const rateKey = user?.id || req.socket.remoteAddress || 'local';
+      if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時助理整理次數已達上限，請稍後再試。' });
+      const body = await readJsonBody(req);
+      const companyName = String(body.companyName || '').trim().slice(0, 80);
+      const ticker = String(body.ticker || '').trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '').slice(0, 12);
+      const relation = String(body.relation || '').trim().slice(0, 160);
+      const provider = body.provider === 'gemini' ? 'gemini' : body.provider === 'ollama' ? 'ollama' : '';
+      const taiwanCodes = [...new Set(String(body.taiwanCodes || '').split(/[,，、\s]+/).map((code) => code.trim()).filter((code) => /^\d{4,6}$/.test(code)))].slice(0, 5);
+      if (!companyName || !taiwanCodes.length) return send(res, 400, { error: '請填國外公司名稱與至少一個 4–6 碼台股代號。' });
+      if (!provider || !aiProviderConfigured(provider)) return send(res, 503, { error: provider === 'gemini' ? 'Gemini 尚未設定，請改選已設定的 Ollama 或 Gemini。' : 'Ollama 尚未設定服務網址，請改選已設定的 AI 服務。' });
+      if (body.aiConsent !== true) return send(res, 400, { error: '請先閱讀並勾選資料傳送同意。' });
+      const query = `"${companyName}" ${ticker ? `"${ticker}"` : ''} (earnings OR revenue OR outlook OR results OR guidance OR supply chain)`;
+      const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+      const [newsResult, secResult] = await Promise.allSettled([news(newsUrl), secCompanyResearch(ticker)]);
+      const headlines = newsResult.status === 'fulfilled' ? newsResult.value.items.slice(0, 10) : [];
+      const sec = secResult.status === 'fulfilled' ? secResult.value : { available: false, reason: secResult.reason?.message || 'SEC 資料暫時無法取得。', filings: [], financials: [] };
+      const taiwan = [];
+      for (const code of taiwanCodes) {
+        const item = { code, quote: null, trend: null };
+        try { item.quote = await fugleIntradayQuote(code); } catch (error) { item.quoteError = error.message || 'Fugle 即時行情暫時無法取得。'; }
+        try {
+          const trend = await fugleTrend(code, 90), last = trend.candles?.at(-1), previous = trend.candles?.at(-6);
+          item.trend = last ? { date: last.date, close: last.close, change5dPercent: previous?.close ? (last.close / previous.close - 1) * 100 : null, sma20: last.sma20, sma60: last.sma60, rsi14: last.rsi14, source: trend.source } : null;
+        } catch (error) { item.trendError = error.message || 'Fugle 歷史趨勢暫時無法取得。'; }
+        taiwan.push(item);
+      }
+      const research = { foreignCompany: companyName, ticker, relation: relation || '使用者尚未填寫關聯說明，需自行查證產業／供應鏈關係。', headlines, sec, taiwan, generatedAt: new Date().toISOString() };
+      const question = [{ role: 'user', content: '請用繁體中文整理這次研究，分成「國外公司事件」「財報與申報」「對台股的可能傳導」「台股近期行情」「仍需查證的風險」五節。只根據提供的資料；新聞標題不能當成已確認事實。明確區分資料事實與推論，解釋傳導關係是使用者提供而不是你驗證的。台股走勢只描述已提供的 Fugle 價格與日 K 指標，不得聲稱事件造成股價變動，不得給出必然漲跌、買賣價或個人化下單指令。沒有資料要明說。' }];
+      const answer = await askAssistant(question, '國際事件與台股關聯研究', JSON.stringify(research), provider);
+      return send(res, 200, { research, answer, provider });
     }
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = resolve(FRONTEND_ROOT, `.${requested}`);
