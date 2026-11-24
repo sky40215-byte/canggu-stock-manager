@@ -46,6 +46,7 @@
   function showSyncedApp() {
     $('accountGate').hidden = true; $('appShell').hidden = false; $('logoutBtn').hidden = false;
     $('syncBadge').innerHTML = '<i></i>雲端同步已開啟';
+    $('syncBadge').title = lastCloudUpdatedAt ? `最近同步：${new Date(lastCloudUpdatedAt).toLocaleString('zh-TW')}` : '雲端資料同步已啟用';
   }
   function startAppServices() {
     if (servicesStarted) return;
@@ -130,7 +131,7 @@
     if (!supabaseClient || !cloudUser || !cloudReady) return true;
     const { data, error } = await supabaseClient.from('portfolio_data').upsert({ user_id: cloudUser.id, data: state }, { onConflict: 'user_id' }).select('updated_at').single();
     if (error) { $('syncBadge').innerHTML = '<i></i>同步失敗'; $('accountStatus').textContent = `雲端同步失敗：${error.message}。本機資料仍保留。`; return false; }
-    lastCloudUpdatedAt = data.updated_at || new Date().toISOString(); $('syncBadge').innerHTML = '<i></i>雲端同步已開啟';
+    lastCloudUpdatedAt = data.updated_at || new Date().toISOString(); $('syncBadge').innerHTML = '<i></i>雲端同步已開啟'; $('syncBadge').title = `最近同步：${new Date(lastCloudUpdatedAt).toLocaleString('zh-TW')}`;
     return true;
   }
   async function pullCloudData() {
@@ -166,6 +167,7 @@
     const dividends = state.transactions.filter((row) => row.type === 'dividend').reduce((sum, row) => sum + num(row.shares) * num(row.price), 0);
     $('realizedPnl').textContent = money(realized); $('realizedPnl').className = `metric ${realized < 0 ? 'negative' : realized > 0 ? 'positive' : ''}`; $('dividendTotal').textContent = money(dividends);
     $('pnlBasis').textContent = quoteMap.size ? '以最新官方收盤價估算' : '依備用價格估算';
+    renderOverviewHoldings();
     $('holdingCount').textContent = String(holdings.length);
     const heldSelect = $('heldStockSelect'), selectedHeldId = heldSelect.value;
     heldSelect.innerHTML = holdings.length ? holdings.map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('') : '<option value="">請先新增持股</option>';
@@ -187,6 +189,28 @@
     renderTrend();
     renderLedger(); renderAllocation(); renderAlerts(); renderJournal(); renderTopupReviewReminders();
     renderStockWatchlist(); renderEvents(); applyEyeComfort();
+  }
+  function renderOverviewHoldings() {
+    const container = $('overviewHoldings');
+    if (!container) return;
+    const holdings = [...state.holdings].sort((a, b) => livePrice(b) * num(b.shares) - livePrice(a) * num(a.shares)).slice(0, 4);
+    if (!holdings.length) {
+      container.innerHTML = '<div class="overview-empty"><span>目前還沒有持倉資料</span><small>新增股票後，這裡會顯示市值較高的部位與目前損益。</small><a href="#holdings">前往管理持股 ↗</a></div>';
+      return;
+    }
+    container.innerHTML = holdings.map((item) => {
+      const code = stockCode(item.name), quote = quoteMap.get(code), price = livePrice(item);
+      const value = price * num(item.shares), pnlValue = (price - num(item.cost)) * num(item.shares);
+      const pnlRate = num(item.cost) * num(item.shares) ? pnlValue / (num(item.cost) * num(item.shares)) * 100 : 0;
+      return `<article class="overview-holding"><div class="overview-holding-title"><span class="overview-holding-mark">${esc(item.name.trim().slice(0,1) || '股')}</span><span><b>${esc(item.name)}</b><small>${quote ? `${esc(quote.market || '台股')} · 行情日期 ${esc(quote.date || '未提供')}` : code ? '尚無對應行情 · 使用備用價格' : '未設定股票代號'}</small></span></div><div class="overview-holding-value"><b>${money(value)}</b><small>${num(item.shares).toLocaleString('zh-TW')} 股 · ${money(price)}／股</small></div><div class="overview-holding-pnl ${pnlValue < 0 ? 'negative' : 'positive'}"><b>${money(pnlValue)}</b><small>${pct(pnlRate)}</small></div></article>`;
+    }).join('');
+  }
+  function setQuoteFreshness(state, label, title = '') {
+    const badge = $('quoteFreshnessBadge');
+    if (!badge) return;
+    badge.dataset.state = state;
+    badge.textContent = label;
+    badge.title = title || label;
   }
   function quoteChangePct(quote) { const price = num(quote.price), change = Number(quote.change); return price - change > 0 && Number.isFinite(change) ? change / (price - change) * 100 : null; }
   function renderStockQuote(quote) {
@@ -279,21 +303,22 @@
     return quoteRefreshPromise;
   }
   async function refreshQuotesNow() {
-    const button = $('refreshQuotes'), candidateButton = $('refreshCandidates'); button.disabled = true; candidateButton.disabled = true; button.textContent = '載入中…'; candidateButton.textContent = '載入中…'; $('quoteStatus').textContent = '正在讀取官方市場資料…';
+    const button = $('refreshQuotes'), candidateButton = $('refreshCandidates'); button.disabled = true; candidateButton.disabled = true; button.textContent = '載入中…'; candidateButton.textContent = '載入中…'; $('quoteStatus').textContent = '正在讀取官方市場資料…'; setQuoteFreshness('loading', '行情更新中');
     try {
       const response = await fetch('/api/quotes', { cache: 'no-store' }), data = await response.json();
       if (!response.ok) throw new Error(data.error || '行情更新失敗');
       quoteMap = new Map(data.quotes.map((row) => [String(row.code), row])); lastQuoteFetchAt = Date.now(); render(); renderCandidates(data.quotes, data.updatedAt);
-      $('stockDeskQuoteDate').textContent = `最近交易日：${data.quotes.map((row) => row.date).filter(Boolean).sort().at(-1) || data.updatedAt.slice(0, 10)}`;
+      $('stockDeskQuoteDate').textContent = `行情日期 ${data.quotes.map((row) => row.date).filter(Boolean).sort().at(-1) || data.updatedAt.slice(0, 10)} · 已更新`;
       if ($('stockLookupInput').value.trim()) showStockLookup($('stockLookupInput').value);
       evaluateAlerts();
       const dates = [...new Set(state.holdings.map((item) => quoteMap.get(stockCode(item.name))?.date).filter(Boolean))];
       const matched = state.holdings.filter((item) => quoteMap.has(stockCode(item.name))).length;
       const dataDate = data.quotes.map((row) => row.date).filter(Boolean).sort().at(-1) || '最近交易日';
       $('quoteStatus').textContent = `${state.holdings.length ? `${matched}/${state.holdings.length} 檔持股比對成功 · ` : `全市場 ${data.quotes.length.toLocaleString('zh-TW')} 檔 · `}${dates.sort().at(-1) || dataDate} 最近交易日收盤 · 更新於 ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`;
+      setQuoteFreshness('fresh', `行情日期 ${dataDate}`, `最近成功更新：${new Date(lastQuoteFetchAt).toLocaleString('zh-TW')}`);
       if (data.warnings?.length) $('quoteStatus').textContent += ` · ${data.warnings.join('、')}`;
       if (state.holdings.length && !matched) showToast('行情已連線，但持股名稱中需要有 4–6 碼股票代號才能配對。');
-    } catch (error) { const detail = error.message.includes('Failed to fetch') ? '無法連到資料服務，請確認服務已啟動。' : error.message; const previousDate = [...quoteMap.values()].map((row) => row.date).filter(Boolean).sort().at(-1); $('quoteStatus').textContent = previousDate ? `更新失敗，暫沿用 ${previousDate} 的舊資料 · ${detail}` : `行情更新失敗 · ${detail}`; $('candidateContent').innerHTML = `<div class="news-empty">公開行情暫時無法取得：${esc(error.message)}</div>`; showToast('行情更新失敗；總覽已標出目前資料日期。'); }
+    } catch (error) { const detail = error.message.includes('Failed to fetch') ? '無法連到資料服務，請確認服務已啟動。' : error.message; const previousDate = [...quoteMap.values()].map((row) => row.date).filter(Boolean).sort().at(-1); $('quoteStatus').textContent = previousDate ? `更新失敗，暫沿用 ${previousDate} 的舊資料 · ${detail}` : `行情更新失敗 · ${detail}`; setQuoteFreshness('error', previousDate ? `更新失敗 · 沿用 ${previousDate}` : '行情更新失敗', detail); $('candidateContent').innerHTML = `<div class="news-empty">公開行情暫時無法取得：${esc(error.message)}</div>`; showToast('行情更新失敗；總覽已標出目前資料日期。'); }
     finally { button.disabled = false; candidateButton.disabled = false; button.textContent = '↻ 更新行情'; candidateButton.textContent = '↻ 更新候選股號'; }
   }
   function renderCandidates(quotes = [...quoteMap.values()], updatedAt = '') {
@@ -365,8 +390,9 @@
     const selected = $('newsStockFilter').value;
     const chosen = selected === 'all' ? state.holdings : state.holdings.filter((item) => item.id === selected);
     const keyword = $('newsKeyword').value.trim();
-    if (!chosen.length && !keyword) return renderNews([], '請先新增持股，或輸入關鍵字搜尋新聞。');
+    if (!chosen.length && !keyword) { $('newsFreshness').dataset.state = 'pending'; $('newsFreshness').textContent = '等待查詢條件'; return renderNews([], '請先新增持股，或輸入關鍵字搜尋新聞。'); }
     const button = $('refreshNews'); button.disabled = true; button.textContent = '載入中…';
+    $('newsFreshness').dataset.state = 'loading'; $('newsFreshness').textContent = '查詢中…';
     try {
       const stocks = chosen.map((item) => ({ name: item.name.replace(/\b\d{4,6}\b/g, '').trim(), code: stockCode(item.name) }));
       const terms = stocks.flatMap((item) => [item.name.slice(0, 32), item.code].filter(Boolean));
@@ -377,7 +403,8 @@
       const searchUrl = `https://news.google.com/search?q=${encodeURIComponent(query)}&hl=zh-TW&gl=TW`;
       $('newsSourceLinks').innerHTML = `<a class="mops-chip" href="${esc(searchUrl)}" target="_blank" rel="noopener noreferrer">在 Google News 開啟完整搜尋結果 ↗</a>`;
       renderNews(data.items);
-    } catch (error) { $('newsSourceLinks').innerHTML = ''; renderNews([], error.message || '新聞來源暫時無法連線，請稍後重試。'); }
+      const queriedAt = new Date(); $('newsFreshness').dataset.state = 'fresh'; $('newsFreshness').textContent = `查詢於 ${queriedAt.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`; $('newsFreshness').title = `最近成功查詢：${queriedAt.toLocaleString('zh-TW')}`;
+    } catch (error) { $('newsFreshness').dataset.state = 'error'; $('newsFreshness').textContent = '查詢失敗'; $('newsFreshness').title = error.message; $('newsSourceLinks').innerHTML = ''; renderNews([], error.message || '新聞來源暫時無法連線，請稍後重試。'); }
     finally { button.disabled = false; button.textContent = '⌕ 搜尋新聞'; }
   }
   $('globalDemoFill').addEventListener('click', () => {
@@ -1094,7 +1121,7 @@
     $('watchlist').hidden = true; $('references').hidden = true;
     const mainSections = [...document.querySelectorAll('.main-content > section')];
     mainSections.forEach((section) => { section.hidden = true; });
-    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = false; $('workflowStrip').hidden = false; $('watchlist').hidden = false; $('references').hidden = false; }
+    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = false; $('portfolioSnapshot').hidden = false; $('workflowStrip').hidden = false; $('insights').hidden = false; $('watchlist').hidden = false; $('references').hidden = false; }
     else if (page === 'workspace') { $('workspace').hidden = false; document.querySelector('.lower-grid').hidden = true; renderWorkspacePanels(); }
     else if (page === 'watchlist' || page === 'references') {
       const grid = document.querySelector('.lower-grid'); grid.hidden = false; grid.classList.add('single-page');

@@ -12,51 +12,35 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261120a">
+  <link rel="stylesheet" href="styles.css?v=20261124a">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
     <aside class="sidebar">
       <a class="brand" href="#top" aria-label="端股首頁"><span class="brand-mark">端</span><span><b>端股</b><small>PERSONAL PORTFOLIO</small></span></a>
       <nav aria-label="主選單">
-        <a class="nav-link" href="#workspace"><span>▦</span>多功能工作區</a>
-        <details class="nav-group" open>
-          <summary>總覽</summary>
-          <a class="nav-link active" href="#overview"><span>◫</span>總覽</a>
+        <a class="nav-link nav-workspace" href="#workspace"><span>▦</span>多功能工作區</a>
+        <details class="nav-group" open><summary>總覽</summary><a class="nav-link active" href="#overview"><span>◫</span>投資總覽</a></details>
+        <details class="nav-group"><summary>投資紀錄</summary>
+          <a class="nav-link" href="#holdings"><span>▤</span>我的持股</a><a class="nav-link" href="#ledger"><span>＋</span>交易與股利</a><a class="nav-link" href="#allocation"><span>◫</span>資產配置</a><a class="nav-link" href="#journal"><span>✎</span>投資日誌</a>
         </details>
-        <details class="nav-group">
-          <summary>持倉與紀錄</summary>
-          <a class="nav-link" href="#holdings"><span>▤</span>我的持股</a>
-          <a class="nav-link" href="#ledger"><span>＋</span>交易與股利</a>
-          <a class="nav-link" href="#allocation"><span>◫</span>資產配置</a>
-          <a class="nav-link" href="#alerts"><span>♧</span>價格提醒</a>
-          <a class="nav-link" href="#events"><span>▦</span>公司事件</a>
-          <a class="nav-link" href="#journal"><span>✎</span>投資日誌</a>
+        <details class="nav-group"><summary>提醒與規劃</summary>
+          <a class="nav-link" href="#alerts"><span>♧</span>價格提醒</a><a class="nav-link" href="#events"><span>▦</span>公司事件</a><a class="nav-link" href="#topup"><span>＋</span>加碼試算</a>
         </details>
-        <details class="nav-group">
-          <summary>分析與研究</summary>
-          <a class="nav-link" href="#insights"><span>✳</span>投資檢視</a>
-          <a class="nav-link" href="#trendAnalysis"><span>⌁</span>技術趨勢</a>
-          <a class="nav-link" href="#holdingAnalysis"><span>▥</span>持股分析</a>
-          <a class="nav-link" href="#topup"><span>＋</span>加碼試算</a>
-          <a class="nav-link" href="#assistant"><span>✧</span>詢問助理</a>
+        <details class="nav-group"><summary>分析工具</summary>
+          <a class="nav-link" href="#insights"><span>✳</span>投資檢視</a><a class="nav-link" href="#trendAnalysis"><span>⌁</span>技術趨勢</a><a class="nav-link" href="#holdingAnalysis"><span>▥</span>持股分析</a><a class="nav-link" href="#candidates"><span>⌕</span>候選股篩選</a>
         </details>
-        <details class="nav-group">
-          <summary>市場與觀察</summary>
-          <a class="nav-link" href="#stockDesk"><span>⌕</span>個股查詢與自選</a>
-          <a class="nav-link" href="#candidates"><span>⌕</span>候選股篩選</a>
-          <a class="nav-link" href="#watchlist"><span>⌁</span>價格觀察紀錄</a>
-          <a class="nav-link" href="#news"><span>◷</span>新聞與公告</a>
-          <a class="nav-link" href="#globalTaiwanResearch"><span>↗</span>國際事件與台股</a>
-          <a class="nav-link" href="#references"><span>↗</span>研究來源</a>
+        <details class="nav-group"><summary>市場研究</summary>
+          <a class="nav-link" href="#stockDesk"><span>⌕</span>個股查詢與自選</a><a class="nav-link" href="#watchlist"><span>⌁</span>價格觀察紀錄</a><a class="nav-link" href="#news"><span>◷</span>新聞與公告</a><a class="nav-link" href="#globalTaiwanResearch"><span>↗</span>國際事件與台股</a><a class="nav-link" href="#references"><span>↗</span>研究來源</a>
         </details>
+        <details class="nav-group"><summary>助理</summary><a class="nav-link" href="#assistant"><span>✧</span>詢問助理</a></details>
       </nav>
       <div class="privacy-card"><span class="privacy-icon">▣</span><b>個人資料依帳號隔離</b><p>登入後資料同步至自己的雲端空間。查詢新聞時，股票代號／名稱及你輸入的關鍵字會送至 Google News。</p><button id="exportBtn" class="text-button">匯出備份 <span>↗</span></button></div>
       <div class="sidebar-foot">私人工作台 · 多裝置同步</div>
     </aside>
 
     <main id="top" class="main-content">
-      <header class="topbar"><div class="breadcrumb">個人投資 <span>/</span> <b>投資總覽</b></div><div class="topbar-right"><span id="syncBadge" class="local-badge"><i></i>本機資料</span><button id="installAppBtn" class="secondary-button install-app-button" type="button" hidden>⬇ 安裝 App</button><button id="eyeModeToggle" class="secondary-button eye-mode-button" type="button" aria-pressed="false">☾ 護眼模式</button><button id="logoutBtn" class="secondary-button" type="button" hidden>登出帳號</button><button id="importBtn" class="icon-button" title="匯入備份" aria-label="匯入備份">⇧</button><input id="importFile" type="file" accept="application/json" hidden></div></header>
+      <header class="topbar"><div class="breadcrumb">個人投資 <span>/</span> <b>投資總覽</b></div><div class="topbar-right"><span id="quoteFreshnessBadge" class="quote-freshness-badge" data-state="pending">行情待更新</span><span id="syncBadge" class="local-badge"><i></i>本機資料</span><button id="installAppBtn" class="secondary-button install-app-button" type="button" hidden>⬇ 安裝 App</button><button id="eyeModeToggle" class="secondary-button eye-mode-button" type="button" aria-pressed="false">☾ 護眼模式</button><button id="logoutBtn" class="secondary-button" type="button" hidden>登出帳號</button><button id="importBtn" class="icon-button" title="匯入備份" aria-label="匯入備份">⇧</button><input id="importFile" type="file" accept="application/json" hidden></div></header>
       <section id="workspace" class="content-card workspace-card" hidden><div class="section-heading"><div><div class="eyebrow">YOUR MULTI-FUNCTION DESK</div><h2>多功能工作區</h2><p class="news-intro">把需要一起查看的功能開在同一頁；輸入與資料會沿用原本功能。</p></div><span id="workspaceCount" class="source-count">尚未開啟功能</span></div><div class="workspace-toolbar"><label for="workspaceFeatureSelect">新增功能</label><select id="workspaceFeatureSelect"><option value="">選擇要開啟的功能</option></select><button id="workspaceAddFeature" type="button" class="primary-button">＋ 開啟功能</button><button id="workspaceReset" type="button" class="secondary-button">清空工作區</button></div><div id="workspaceEmpty" class="workspace-empty">從上方選擇功能，例如「技術趨勢」和「國際事件」，就能同時查看。</div><div id="workspacePanelGrid" class="workspace-panel-grid"></div></section>
 
       <section id="overview" class="hero"><div><h1>投資總覽</h1><p>查看持倉市值、損益與最近交易日行情。</p></div><button class="primary-button" id="addHoldingTop" type="button">＋ 新增持股</button></section>
@@ -70,6 +54,8 @@
       </section>
 
       <section id="marketFreshness" class="market-freshness"><div><b>行情資料</b><span id="quoteStatus" role="status" aria-live="polite">登入後自動更新；資料為最近交易日收盤價。</span></div><button class="secondary-button" id="refreshQuotes" type="button">更新行情</button></section>
+
+      <section id="portfolioSnapshot" class="overview-snapshot"><div class="overview-snapshot-heading"><div><h2>持倉概況</h2><p>按目前市值排序，快速查看主要部位與損益。</p></div><a class="secondary-button" href="#holdings">查看全部持股 ↗</a></div><div id="overviewHoldings" class="overview-holdings"></div></section>
 
       <section id="workflowStrip" class="workflow-strip" aria-label="投資管理快速入口"><div class="workflow-heading"><span class="workflow-kicker">從這裡開始</span><b>你的投資管理流程</b><span>記錄 → 檢視 → 研究</span></div><div class="workflow-cards"><a class="workflow-card workflow-holdings" href="#holdings"><span class="workflow-number">01</span><span><b>管理持倉與交易</b><small>更新股數、成本、買賣與股利</small></span><span class="workflow-arrow">↗</span></a><a class="workflow-card workflow-allocation" href="#allocation"><span class="workflow-number">02</span><span><b>檢視配置與績效</b><small>比較目前市值、目標比例與損益</small></span><span class="workflow-arrow">↗</span></a><a class="workflow-card workflow-analysis" href="#holdingAnalysis"><span class="workflow-number">03</span><span><b>研究持有個股</b><small>查看 K 線、成交量與技術指標</small></span><span class="workflow-arrow">↗</span></a></div></section>
 
@@ -101,7 +87,7 @@
 
       <section id="journal" class="content-card feature-card"><div class="section-heading"><div><div class="eyebrow">INVESTMENT JOURNAL</div><h2>投資日誌</h2><p class="news-intro">記錄投資理由、風險與回顧日期，留存自己的判斷脈絡。</p></div><button class="secondary-button" id="addJournal">＋ 新增日誌</button></div><div id="journalContent" class="record-list"></div></section>
 
-      <section id="news" class="content-card news-card"><div class="section-heading"><div><div class="eyebrow">COMPANY NEWS & FILINGS</div><h2>新聞與市場動態</h2><p class="news-intro">可依持股或關鍵字搜尋；點選標題查看原文。</p></div></div><div class="news-search"><label>股票範圍<select id="newsStockFilter"><option value="all">全部持股</option></select></label><label class="news-keyword-label">關鍵字<input id="newsKeyword" maxlength="80" placeholder="例如：法說、營收、展望"></label><button class="secondary-button" id="refreshNews">⌕ 搜尋新聞</button></div><div id="newsSourceLinks" class="mops-links"></div><div id="newsContent" class="news-list"><div class="news-empty">新增持股或輸入關鍵字開始搜尋。</div></div><div id="mopsQuickLinks" class="mops-links"></div><div class="news-footnote"><span class="info-dot">i</span> 新聞由 Google News RSS 搜尋提供；查詢會傳送所選股票名稱／代號與關鍵字至 Google News。公告原文請至公開資訊觀測站確認。</div></section>
+      <section id="news" class="content-card news-card"><div class="section-heading"><div><div class="eyebrow">COMPANY NEWS & FILINGS</div><h2>新聞與市場動態</h2><p class="news-intro">可依持股或關鍵字搜尋；點選標題查看原文。</p></div><span id="newsFreshness" class="data-status" data-state="pending">尚未查詢</span></div><div class="news-search"><label>股票範圍<select id="newsStockFilter"><option value="all">全部持股</option></select></label><label class="news-keyword-label">關鍵字<input id="newsKeyword" maxlength="80" placeholder="例如：法說、營收、展望"></label><button class="secondary-button" id="refreshNews">⌕ 搜尋新聞</button></div><div id="newsSourceLinks" class="mops-links"></div><div id="newsContent" class="news-list"><div class="news-empty">新增持股或輸入關鍵字開始搜尋。</div></div><div id="mopsQuickLinks" class="mops-links"></div><div class="news-footnote"><span class="info-dot">i</span> 新聞由 Google News RSS 搜尋提供；查詢會傳送所選股票名稱／代號與關鍵字至 Google News。公告原文請至公開資訊觀測站確認。</div></section>
 
       <section id="globalTaiwanResearch" class="content-card news-card global-research-card"><div class="section-heading"><div><div class="eyebrow">GLOBAL EVENTS · TAIWAN LINKS</div><h2>國際事件與台股關聯</h2><p class="news-intro">根據海外公司新聞與財報，推估可能受影響的台灣產業與個股，並說明逐檔傳導線索。</p></div><span class="source-count">Google News · SEC EDGAR · Fugle</span></div><div class="global-demo-callout"><div><b>快速體驗</b><span>填入 NVIDIA 範例查詢，送出後仍會即時查詢公開資料。</span></div><button type="button" id="globalDemoFill" class="secondary-button">填入示範查詢</button></div><form id="globalResearchForm" class="global-research-form"><label>國外公司名稱<input id="globalCompany" maxlength="80" placeholder="例如 NVIDIA" required></label><label>美股代號（選填）<input id="globalTicker" maxlength="12" placeholder="例如 NVDA"></label><label>想特別檢視的台股（選填）<input id="globalTaiwanCodes" maxlength="40" placeholder="例如 2330、2317；可留白"></label><label>產業／供應鏈線索（選填）<input id="globalRelation" maxlength="160" placeholder="例如 AI 晶片、伺服器、散熱"></label><label>AI 分析方式<select id="globalAiProvider"><option value="gemini">Gemini 3.8 Flash（雲端）</option><option value="ollama">Ollama（本機備用）</option></select></label><button id="globalResearchSubmit" type="submit" class="primary-button">分析產業與個股</button></form><label class="global-consent"><input id="globalResearchConsent" type="checkbox">我同意將公司名稱、代號、線索、新聞與財報摘要，以及上市櫃公司名稱／代號名單，送到所選 AI 服務分析；不會傳送我的持倉、成本或登入資料。</label><div id="globalResearchStatus" class="trend-status" role="status" aria-live="polite">輸入海外公司名稱即可開始；台股代號可留白，AI 會從上市櫃個股名單中找出可能相關標的。美國公司可查 SEC 公開申報文件。</div><div id="globalResearchResult" class="global-research-result" hidden></div><div class="insight-disclaimer"><span class="info-dot">i</span>產業與個股關聯是模型依公開資料做的研究推論，可能不完整或有誤，請核對來源；不代表已驗證供應鏈、事件因果、漲跌保證或買賣建議。報價使用 Fugle；不會傳送你的持倉資料。</div></section>
 
@@ -134,6 +120,6 @@
   <section id="accountGate" class="account-gate" hidden><div class="account-card"><div class="brand-mark">端</div><div class="eyebrow">PRIVATE PORTFOLIO SYNC</div><h1>登入以同步你的資料</h1><p>使用同一個帳號，即可在電腦與手機查看相同的持股、交易和自選清單。</p><form id="accountForm"><label>電子郵件<input id="accountEmail" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>密碼<input id="accountPassword" type="password" minlength="8" autocomplete="current-password" required placeholder="至少 8 個字元"></label><button id="accountSubmit" class="primary-button" type="submit">登入</button></form><button id="accountModeToggle" class="text-button account-mode-toggle" type="button">還沒有帳號？建立帳號</button><div id="accountStatus" class="account-status" role="status" aria-live="polite">資料同步設定載入中…</div><small>每個帳號只能讀取自己的資料。請記住登入密碼，並定期匯出加密備份。</small></div></section>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="app.js?v=20261124d"></script>
+  <script src="app.js?v=20261124e"></script>
 </body>
 </html>
