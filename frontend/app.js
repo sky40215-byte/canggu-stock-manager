@@ -675,7 +675,9 @@
       const stockImpactProvider = $('stockImpactProvider');
       [...stockImpactProvider.options].forEach((option) => { option.disabled = !assistantProviderAvailability[option.value]; });
       if (!assistantProviderAvailability[stockImpactProvider.value]) stockImpactProvider.value = assistantProviderAvailability.gemini ? 'gemini' : 'ollama';
-      $('stockImpactStatus').textContent = `已就緒。分析時會查詢 ${stockImpactProvider.value === 'gemini' ? 'Gemini' : 'Ollama'}、Fugle 日 K 與國內外新聞。`;
+      $('stockImpactStatus').textContent = assistantProviderAvailability[stockImpactProvider.value]
+        ? `已就緒。分析時會查詢 ${stockImpactProvider.value === 'gemini' ? 'Gemini' : 'Ollama'}、Fugle 日 K 與國內外新聞。`
+        : '目前沒有可用的 AI 服務。若使用 Render 上的本機 Ollama，請設定有效的 OLLAMA_BASE_URL（https://…trycloudflare.com），並確保本機 Tunnel 持續運作。';
       stockImpactProvider.addEventListener('change', () => { $('stockImpactStatus').textContent = `${stockImpactProvider.value === 'gemini' ? 'Gemini' : 'Ollama'} 已選取；輸入股票並勾選同意後即可查詢。`; });
       const ollamaTopupOption = $('topupMode').querySelector('option[value="ollama"]');
       ollamaTopupOption.disabled = !assistantProviderAvailability.ollama;

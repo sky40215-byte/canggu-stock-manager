@@ -480,17 +480,37 @@ async function askOllama(messages, topic, marketContext = '', outputFormat = 'te
       ], options: { temperature: 0.25, num_predict: outputFormat === 'json' ? 1400 : 700 } })
     });
   } catch {
-    throw Object.assign(new Error('無法連線到 Ollama。請確認 Ollama 已啟動、模型已下載，且 OLLAMA_BASE_URL 設定正確。'), { status: 503 });
+    const hosted = process.env.NODE_ENV === 'production';
+    throw Object.assign(new Error(hosted
+      ? '無法連線到 Ollama。請確認本機 Ollama、驗證轉接程式與 Cloudflare Tunnel 都在執行，且 Render 的 OLLAMA_BASE_URL 是目前有效的 https://…trycloudflare.com 網址。'
+      : '無法連線到 Ollama。請確認 Ollama 已啟動、模型已下載，且 OLLAMA_BASE_URL 設定正確。'), { status: 503 });
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(data.error || 'Ollama 暫時無法回答，請確認模型名稱與服務狀態。'), { status: 502 });
+  if (!response.ok) {
+    const detail = String(data.error || '').replace(/<[^>]*>/g, ' ').replace(/[\r\n]+/g, ' ').trim().slice(0, 220);
+    const hosted = process.env.NODE_ENV === 'production';
+    const message = detail
+      ? `Ollama 回應錯誤（${response.status}）：${detail}`
+      : response.status === 404
+        ? `Ollama 找不到 API 路徑或模型（404）。請確認 OLLAMA_BASE_URL 沒有多加 /api，且 OLLAMA_MODEL 與本機下載的模型名稱一致。`
+        : response.status === 401 || response.status === 403
+          ? `Ollama 連線驗證失敗（${response.status}）。請確認 Render 的 OLLAMA_PROXY_TOKEN 與本機轉接程式設定相同。`
+          : response.status >= 500
+            ? `Ollama 上游服務回應錯誤（${response.status}）。${hosted ? '請重新確認 Ollama、驗證轉接程式與 Cloudflare Tunnel 正在執行，並確認 Render 的 OLLAMA_BASE_URL 沒有因 Tunnel 重啟而過期。' : '請確認 Ollama 服務與模型仍在執行。'}`
+            : `Ollama 請求失敗（${response.status}），請確認模型名稱與連線設定。`;
+    throw Object.assign(new Error(message), { status: response.status >= 500 ? 503 : 502 });
+  }
   const answer = data.message?.content?.trim();
   if (!answer) throw Object.assign(new Error('Ollama 沒有產生回答，請換個方式提問。'), { status: 502 });
   return answer;
 }
 function aiProviderConfigured(provider) {
   if (provider === 'fugle') return Boolean(FUGLE_API_KEY);
-  if (provider === 'ollama') return Boolean(process.env.OLLAMA_BASE_URL || AI_PROVIDER === 'ollama');
+  if (provider === 'ollama') {
+    if (process.env.NODE_ENV !== 'production') return Boolean(process.env.OLLAMA_BASE_URL || AI_PROVIDER === 'ollama');
+    if (!process.env.OLLAMA_BASE_URL) return false;
+    try { const endpoint = new URL(OLLAMA_BASE_URL); return endpoint.protocol === 'https:' && !['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname); } catch { return false; }
+  }
   if (provider === 'gemini') return Boolean(GEMINI_API_KEY);
   return false;
 }
