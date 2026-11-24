@@ -934,12 +934,57 @@
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '目標配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究資料' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究資料', workspace: '多功能工作區' };
+  const workspaceGrid = $('workspacePanelGrid'), workspaceHome = new Map();
+  const workspaceFeatureIds = Object.keys(pageTitles).filter((id) => !['overview', 'workspace'].includes(id));
+  workspaceFeatureIds.forEach((id) => { const element = $(id); if (element?.parentElement) workspaceHome.set(id, { parent: element.parentElement, next: element.nextElementSibling }); });
+  let workspaceOpenPages = [];
+  try { workspaceOpenPages = [...new Set(JSON.parse(localStorage.getItem('duanguWorkspacePages') || '[]').filter((id) => workspaceFeatureIds.includes(id)))]; } catch { workspaceOpenPages = []; }
+  const persistWorkspace = () => { try { localStorage.setItem('duanguWorkspacePages', JSON.stringify(workspaceOpenPages)); } catch { /* Workspace layout remains usable without browser storage. */ } };
+  function restoreWorkspacePanels() {
+    [...workspaceGrid.querySelectorAll('.workspace-panel')].forEach((panel) => {
+      const id = panel.dataset.page, element = $(id), home = workspaceHome.get(id);
+      if (element && home) { home.parent.insertBefore(element, home.next?.parentElement === home.parent ? home.next : null); element.hidden = true; }
+      panel.remove();
+    });
+  }
+  function updateWorkspaceControls() {
+    [...$('workspaceFeatureSelect').options].forEach((option) => { if (option.value) option.disabled = workspaceOpenPages.includes(option.value); });
+    $('workspaceCount').textContent = workspaceOpenPages.length ? `已開啟 ${workspaceOpenPages.length} 項功能` : '尚未開啟功能';
+    $('workspaceEmpty').hidden = workspaceOpenPages.length > 0;
+  }
+  function renderWorkspacePanels() {
+    restoreWorkspacePanels();
+    workspaceOpenPages.forEach((id) => {
+      const element = $(id), home = workspaceHome.get(id);
+      if (!element || !home) return;
+      const panel = document.createElement('article'); panel.className = 'workspace-panel'; panel.dataset.page = id;
+      const heading = document.createElement('header'); heading.className = 'workspace-panel-heading';
+      const title = document.createElement('b'); title.textContent = pageTitles[id];
+      const close = document.createElement('button'); close.type = 'button'; close.className = 'workspace-panel-close'; close.setAttribute('aria-label', `關閉${pageTitles[id]}`); close.textContent = '×';
+      close.addEventListener('click', () => { workspaceOpenPages = workspaceOpenPages.filter((item) => item !== id); persistWorkspace(); renderWorkspacePanels(); updateWorkspaceControls(); });
+      heading.append(title, close); panel.append(heading); workspaceGrid.append(panel); panel.append(element); element.hidden = false;
+    });
+    updateWorkspaceControls();
+    requestAnimationFrame(() => { if (trendData && workspaceOpenPages.includes('trendAnalysis')) drawTrendChart(trendData.candles); if (heldStockData && workspaceOpenPages.includes('holdingAnalysis')) drawHoldingCandles(heldStockData.candles); });
+  }
+  const workspaceSelect = $('workspaceFeatureSelect');
+  workspaceFeatureIds.forEach((id) => { const option = document.createElement('option'); option.value = id; option.textContent = pageTitles[id]; workspaceSelect.append(option); });
+  $('workspaceAddFeature').addEventListener('click', () => {
+    const id = workspaceSelect.value;
+    if (!id || workspaceOpenPages.includes(id)) return;
+    workspaceOpenPages.push(id); persistWorkspace(); workspaceSelect.value = ''; renderWorkspacePanels();
+  });
+  $('workspaceReset').addEventListener('click', () => { workspaceOpenPages = []; persistWorkspace(); renderWorkspacePanels(); });
   function showPage(page, updateHash = false) {
     if (!pageTitles[page]) page = 'overview';
+    if (page !== 'workspace') restoreWorkspacePanels();
+    document.querySelector('.lower-grid').hidden = false;
+    $('watchlist').hidden = true; $('references').hidden = true;
     const mainSections = [...document.querySelectorAll('.main-content > section')];
     mainSections.forEach((section) => { section.hidden = true; });
-    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = false; $('workflowStrip').hidden = false; }
+    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = false; $('workflowStrip').hidden = false; $('watchlist').hidden = false; $('references').hidden = false; }
+    else if (page === 'workspace') { $('workspace').hidden = false; document.querySelector('.lower-grid').hidden = true; renderWorkspacePanels(); }
     else if (page === 'watchlist' || page === 'references') {
       const grid = document.querySelector('.lower-grid'); grid.hidden = false; grid.classList.add('single-page');
       $('watchlist').hidden = page !== 'watchlist'; $('references').hidden = page !== 'references';
