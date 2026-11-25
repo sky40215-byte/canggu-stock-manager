@@ -1,3 +1,6 @@
+import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.js?v=20261125c';
+import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125c';
+
 (() => {
   'use strict';
   const STORAGE_KEY = 'canggu.v1.portfolio';
@@ -34,7 +37,10 @@
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     catch { showToast('瀏覽器儲存空間不足，請先匯出備份。'); }
   }
-  function hasPortfolioContent(value) { return ['holdings','observations','transactions','alerts','journal','watchlist','events'].some((key) => Array.isArray(value?.[key]) && value[key].length > 0) || (Array.isArray(value?.settings?.topupReviewReminders) && value.settings.topupReviewReminders.length > 0); }
+  function hasPortfolioContent(value) {
+    return ['holdings','observations','transactions','alerts','journal','watchlist','events'].some((key) => Array.isArray(value?.[key]) && value[key].length > 0)
+      || ['topupReviewReminders', 'screenPresets'].some((key) => Array.isArray(value?.settings?.[key]) && value.settings[key].length > 0);
+  }
   function stableSerialize(value) {
     if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
     if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
@@ -153,6 +159,7 @@
   const isoToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
   const money = (value) => 'NT$ ' + num(value).toLocaleString('zh-TW', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const marketLabels = { tw: '台灣', us: '美國', jp: '日本', hk: '香港', gb: '英國', de: '德國', ca: '加拿大', au: '澳洲', in: '印度', sg: '新加坡', kr: '韓國', fr: '法國' };
+  const marketCurrencies = { tw: 'TWD', us: 'USD', jp: 'JPY', hk: 'HKD', gb: 'GBP', de: 'EUR', ca: 'CAD', au: 'AUD', in: 'INR', sg: 'SGD', kr: 'KRW', fr: 'EUR' };
   const holdingMarket = (item) => item?.market || 'tw';
   const holdingCurrency = (item) => {
     if (holdingMarket(item) === 'tw') return 'TWD';
@@ -177,22 +184,18 @@
   const esc = (value) => String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   const stockCode = (name) => String(name).match(/\b\d{4,6}\b/)?.[0] || '';
   const livePrice = (item) => holdingQuote(item)?.price ?? num(item.price);
+  const holdingScenarioButton = (item, compact = false) => `<button type="button" class="secondary-button holding-scenario-button" data-simulate-holding="${esc(item.id)}" aria-label="試算 ${esc(item.name)} 持倉">${compact ? '試算' : '試算這筆持倉'}</button>`;
   function showToast(message) { const toast = $('toast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 2500); }
   function pnl(item) { return (num(item.price) - num(item.cost)) * num(item.shares); }
   function render() {
     const holdings = state.holdings;
     const taiwanHoldings = holdings.filter((item) => holdingMarket(item) === 'tw');
-    const cost = taiwanHoldings.reduce((sum, item) => sum + num(item.cost) * num(item.shares), 0);
-    const value = taiwanHoldings.reduce((sum, item) => sum + livePrice(item) * num(item.shares), 0);
-    const profit = value - cost;
-    $('marketValue').textContent = money(value); $('costValue').textContent = money(cost); $('totalPnl').textContent = money(profit);
-    $('totalPnl').className = `metric ${profit < 0 ? 'negative' : profit > 0 ? 'positive' : ''}`;
-    $('totalPnlPct').textContent = pct(cost ? profit / cost * 100 : 0); $('totalPnlPct').className = `pnl-pill ${profit < 0 ? 'negative' : ''}`;
     const realized = state.transactions.filter((row) => row.type === 'sell').reduce((sum, row) => sum + num(row.realizedPnl), 0);
     const dividends = state.transactions.filter((row) => row.type === 'dividend').reduce((sum, row) => sum + num(row.shares) * num(row.price), 0);
     $('realizedPnl').textContent = money(realized); $('realizedPnl').className = `metric ${realized < 0 ? 'negative' : realized > 0 ? 'positive' : ''}`; $('dividendTotal').textContent = money(dividends);
-    $('pnlBasis').textContent = quoteMap.size ? '以最新官方收盤價估算' : '依備用價格估算';
     renderOverviewHoldings();
+    renderTopupHoldingOptions();
+    renderScreenPresets();
     $('holdingCount').textContent = String(holdings.length);
     const heldSelect = $('heldStockSelect'), selectedHeldId = heldSelect.value;
     heldSelect.innerHTML = taiwanHoldings.length ? taiwanHoldings.map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('') : '<option value="">請先新增台股</option>';
@@ -203,6 +206,10 @@
       const colors = ['','blue','gold','pink']; const initial = esc(item.name.trim().slice(0, 1) || '股');
       return `<tr><td><div class="stock-name"><span class="stock-avatar ${colors[index % colors.length]}">${initial}</span><span>${esc(item.name)}<small class="stock-sub">${esc(marketLabels[holdingMarket(item)] || '其他市場')} · ${quote ? `${esc(quote.datetime || quote.date || quote.updatedAt || '')}` : item.updated ? `備用價 · ${esc(item.updated)}` : '個人持倉'}</small></span></div></td><td>${num(item.shares).toLocaleString('zh-TW')}</td><td>${currencyMoney(item.cost, currency)}</td><td>${currencyMoney(price, currency)}${quote?.change !== null && quote?.change !== undefined ? `<small class="quote-change ${quote.change < 0 ? 'negative' : 'positive'}">${quote.change > 0 ? '+' : ''}${currencyMoney(quote.change, currency)}</small>` : ''}</td><td>${currencyMoney(valueNow, currency)}</td><td class="${currentPnl < 0 ? 'negative' : 'positive'}">${currencyMoney(currentPnl, currency)} <small>(${pct(rate)})</small></td><td>${num(item.targetWeight) ? `${num(item.targetWeight).toFixed(1)}%` : '—'}</td><td><div class="row-actions"><button class="row-action" data-edit="${esc(item.id)}" title="編輯">✎</button><button class="row-action" data-delete="${esc(item.id)}" title="刪除">×</button></div></td></tr>`;
     }).join('');
+    $('holdingsBody').querySelectorAll('[data-edit]').forEach((button) => {
+      const item = holdings.find((holding) => holding.id === button.dataset.edit);
+      if (item) button.insertAdjacentHTML('beforebegin', holdingScenarioButton(item, true));
+    });
     $('emptyHoldings').style.display = holdings.length ? 'none' : 'block';
     $('stockOptions').innerHTML = taiwanHoldings.map((item) => `<option value="${esc(item.name)}"></option>`).join('');
     $('mopsQuickLinks').innerHTML = taiwanHoldings.filter((item) => stockCode(item.name)).map((item) => `<a class="mops-chip" href="https://mops.twse.com.tw/mops/web/t05st01?TYPEK=all&co_id=${encodeURIComponent(stockCode(item.name))}" target="_blank" rel="noopener noreferrer">${esc(item.name)} 公告 ↗</a>`).join('');
@@ -215,26 +222,41 @@
     renderLedger(); renderAllocation(); renderAlerts(); renderJournal(); renderTopupReviewReminders();
     renderStockWatchlist(); renderEvents(); applyEyeComfort();
   }
+  function renderOverviewSummary(market, holdings) {
+    const totals = marketTotals(holdings, livePrice, holdingCurrency);
+    if (!totals.size) totals.set(marketCurrencies[market], { cost: 0, value: 0 });
+    const groups = [...totals].sort(([a], [b]) => a.localeCompare(b));
+    const fields = { marketValue: (row) => row.value, costValue: (row) => row.cost, totalPnl: (row) => row.value - row.cost };
+    for (const [id, amount] of Object.entries(fields)) {
+      $(id).innerHTML = groups.map(([currency, row]) => {
+        const value = amount(row);
+        const color = id === 'totalPnl' ? (value < 0 ? 'negative' : value > 0 ? 'positive' : '') : '';
+        return `<span class="${color}">${esc(currencyMoney(value, currency))}</span>`;
+      }).join('');
+      $(id).classList.toggle('metric-breakdown', groups.length > 1);
+    }
+    const row = groups[0][1], ratio = row.cost ? (row.value - row.cost) / row.cost * 100 : 0;
+    $('totalPnlPct').hidden = groups.length > 1 || !row.cost;
+    $('totalPnlPct').textContent = pct(ratio);
+    $('totalPnlPct').classList.toggle('negative', ratio < 0);
+    $('pnlBasis').textContent = '市值減帳面成本，未扣預估賣出費用';
+    const quotes = holdings.map(holdingQuote).filter(Boolean);
+    const dates = [...new Set(quotes.map((quote) => String(quote.datetime || quote.date || '').slice(0, 10)).filter(Boolean))].sort();
+    const source = market === 'tw' ? 'TWSE／TPEx' : 'Twelve Data';
+    const range = dates.length === 1 ? dates[0] : dates.length > 1 ? dates[0] + ' 至 ' + dates.at(-1) : '日期未提供';
+    $('marketValueBasis').textContent = quotes.length ? source + ' · ' + range + (quotes.length < holdings.length ? ' · 部分使用備用價' : '')
+      : holdings.length ? '依備用價格估算' : '此市場尚無持股';
+    $('summaryGrid').classList.toggle('is-overseas', market !== 'tw');
+    $('summaryGrid').querySelectorAll('[data-tw-only]').forEach((card) => { card.hidden = market !== 'tw'; });
+    if (!$('overview').hidden) $('marketFreshness').hidden = market !== 'tw';
+  }
   function renderOverviewHoldings() {
     const container = $('overviewHoldings');
     if (!container) return;
     const market = $('overviewMarketFilter')?.value || 'tw';
     const marketHoldings = state.holdings.filter((item) => holdingMarket(item) === market);
+    renderOverviewSummary(market, marketHoldings);
     const holdings = marketHoldings.sort((a, b) => holdingCurrency(a).localeCompare(holdingCurrency(b)) || livePrice(b) * num(b.shares) - livePrice(a) * num(a.shares)).slice(0, 4);
-    const totals = new Map();
-    if (market !== 'tw') {
-      for (const item of marketHoldings) {
-        const currency = holdingCurrency(item);
-        const result = totals.get(currency) || { cost: 0, value: 0 };
-        result.cost += num(item.cost) * num(item.shares);
-        result.value += livePrice(item) * num(item.shares);
-        totals.set(currency, result);
-      }
-    }
-    $('overviewMarketTotals').innerHTML = [...totals].map(([currency, result]) => {
-      const difference = result.value - result.cost;
-      return `<div><span>市值 <b>${currencyMoney(result.value, currency)}</b></span><span>成本 <b>${currencyMoney(result.cost, currency)}</b></span><span>未實現損益 <b class="${difference < 0 ? 'negative' : 'positive'}">${currencyMoney(difference, currency)}</b></span></div>`;
-    }).join('');
     $('overviewMarketStatus').textContent = (holdings.length && overviewQuoteStatus.get(market)) || '';
     $('refreshMarketHoldings').hidden = market === 'tw' || !holdings.length;
     $('refreshMarketHoldings').disabled = overviewQuoteJobs.has(market);
@@ -248,8 +270,8 @@
       const value = price * num(item.shares), pnlValue = (price - num(item.cost)) * num(item.shares);
       const pnlRate = num(item.cost) * num(item.shares) ? pnlValue / (num(item.cost) * num(item.shares)) * 100 : 0;
       const quoteTime = quote?.datetime || quote?.date;
-      const priceLabel = quote ? (quoteTime ? '行情時間 ' + quoteTime : '行情時間未提供') : '使用備用價格';
-      return `<article class="overview-holding"><div class="overview-holding-title"><span class="overview-holding-mark">${esc(item.name.trim().slice(0,1) || '股')}</span><span><b>${esc(item.name)}</b><small>${esc(marketLabels[market] || '台灣')} · ${esc(priceLabel)}</small></span></div><div class="overview-holding-value"><b>${currencyMoney(value, currency)}</b><small>${num(item.shares).toLocaleString('zh-TW')} 股 · ${currencyMoney(price, currency)}／股</small></div><div class="overview-holding-pnl ${pnlValue < 0 ? 'negative' : 'positive'}"><b>${currencyMoney(pnlValue, currency)}</b><small>${pct(pnlRate)}</small></div></article>`;
+      const priceLabel = quote ? (quote.source || 'TWSE／TPEx') + ' · ' + (quoteTime || '時間未提供') : '使用備用價格';
+      return `<article class="overview-holding"><div class="overview-holding-title"><span class="overview-holding-mark">${esc(item.name.trim().slice(0,1) || '股')}</span><span><b>${esc(item.name)}</b><small>${esc(priceLabel)}</small></span></div><div class="overview-holding-value"><b>${currencyMoney(value, currency)}</b><small>${num(item.shares).toLocaleString('zh-TW')} 股 · ${currencyMoney(price, currency)}／股</small></div><div class="overview-holding-pnl ${pnlValue < 0 ? 'negative' : 'positive'}"><b>${currencyMoney(pnlValue, currency)}</b><small>${pct(pnlRate)}</small></div>${holdingScenarioButton(item, true)}</article>`;
     }).join('');
   }
   function setQuoteFreshness(state, label, title = '') {
@@ -444,7 +466,7 @@
       const code = stockCode(item.name), quote = quoteMap.get(code), value = livePrice(item) * num(item.shares);
       const weight = marketValue ? value / marketValue * 100 : 0;
       const cost = num(item.cost) * num(item.shares), rate = cost ? ((value - cost) / cost) * 100 : 0;
-      if (weight >= 40) cards.push(`<article class="insight-item"><span class="insight-mark warn">!</span><div><b>${esc(item.name)}：部位集中度偏高</b><p>約占目前持倉市值 ${weight.toFixed(1)}%。可檢視分散程度、資金用途與可承受波動。</p></div></article>`);
+      if (weight >= 40) cards.push(`<article class="insight-item"><span class="insight-mark warn">!</span><div><b>${esc(item.name)}：部位集中度偏高</b><p>約占目前持倉市值 ${weight.toFixed(1)}%。可檢視分散程度、資金用途與可承受波動。</p>${holdingScenarioButton(item)}</div></article>`);
       if (quote?.change !== null && quote?.change !== undefined && Math.abs(num(quote.change)) >= 5) cards.push(`<article class="insight-item"><span class="insight-mark warn">↕</span><div><b>${esc(item.name)}：最近交易日波動較大</b><p>官方行情顯示漲跌 ${num(quote.change) > 0 ? '+' : ''}${num(quote.change).toFixed(2)} 元。建議核對公告、新聞與事件日期。</p></div></article>`);
       if (rate <= -10) cards.push(`<article class="insight-item"><span class="insight-mark down">↓</span><div><b>${esc(item.name)}：重新檢查原始投資假設</b><p>目前未實現損益約 ${pct(rate)}。回顧持有期限、資金需求與原先研究紀錄；成本價本身不代表合理價值。</p></div></article>`);
       else if (rate >= 20) cards.push(`<article class="insight-item"><span class="insight-mark up">↑</span><div><b>${esc(item.name)}：檢視獲利後的配置</b><p>目前未實現損益約 ${pct(rate)}。可檢視部位是否超出原定配置，並把費用與稅務納入考量。</p></div></article>`);
@@ -508,6 +530,24 @@
       return `<article class="candidate-row"><div class="candidate-stock"><b>${esc(item.code)} ${esc(item.name)}</b><small>${esc(item.market)} · ${esc(item.date || updatedAt.slice(0, 10) || '最近交易日')}${item.turnover != null ? ` · 成交值 ${money(item.turnover)}` : ''}</small></div><div class="candidate-price">${money(item.price)}<small class="positive">+${item.changePct.toFixed(2)}%</small></div><div class="candidate-links"><a href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a><a href="${esc(noticeUrl)}" target="_blank" rel="noopener noreferrer">公司公告 ↗</a></div></article>`;
     }).join('');
   }
+  const screenPresetFields = ['screenPriceUnlimited', 'screenPriceLimit', 'screenHorizon', 'screenBudgetUnlimited', 'screenBudget', 'screenLossUnlimited', 'screenMaxLoss', 'screenShareUnit'];
+  function screenPresets() {
+    return Array.isArray(state.settings.screenPresets)
+      ? state.settings.screenPresets.filter((row) => row?.id && row?.name && row.fields && typeof row.fields === 'object')
+      : [];
+  }
+  function renderScreenPresets() {
+    const select = $('screenPreset'), selected = select.value;
+    select.innerHTML = '<option value="">選擇條件</option>' + screenPresets().map((row) => `<option value="${esc(row.id)}">${esc(row.name)}</option>`).join('');
+    if (screenPresets().some((row) => row.id === selected)) select.value = selected;
+    $('removeScreenPreset').disabled = !select.value;
+  }
+  function screenScoreDetails(item) {
+    if (!Array.isArray(item.scoreBreakdown)) return '';
+    return `<details class="screen-score-details"><summary>查看分數明細</summary><dl>
+      ${item.scoreBreakdown.map((row) => `<div><dt>${esc(row.label)}</dt><dd>${row.missing ? '資料不足' : row.points ? `${row.points > 0 ? '+' : ''}${Number(row.points)} 分` : '未觸發 · 0 分'}</dd></div>`).join('')}
+    </dl></details>`;
+  }
   function renderScreenCandidates(data, sizing, page = 1) {
     const container = $('screenContent'), candidates = data.candidates || [], pageSize = 10;
     if (!candidates.length) { container.innerHTML = `<div class="screen-empty">${esc(data.message || '目前沒有符合條件的候選，試著放寬每股價格上限或稍後再查。')}</div>`; return; }
@@ -523,13 +563,59 @@
       const noSharesReason = unitShares ? '' : sizing.budgetUnlimited && sizing.lossUnlimited ? '預算與虧損上限都不限，無法估算股數；請至少設定其中一項。' : sizing.unit === 1000 ? '目前預算或虧損上限不足以估算 1 張（1000 股）' : '目前預算或虧損上限不足以估算 1 股';
       return `<article class="screen-row"><div class="screen-row-top"><div class="candidate-stock"><b><span class="screen-rank">${offset + index + 1}</span>${esc(item.code)} ${esc(item.name || '')}</b><small>${esc(item.market || '台股')} · 日 K ${esc(item.date || '')} · 成交值 ${money(item.turnover)}</small></div><div class="screen-quote">${money(item.price)}<small class="${item.horizonReturn >= 0 ? 'positive' : 'negative'}">${data.horizon === 5 ? '5 日' : '20 日'} ${pct(item.horizonReturn)}</small></div><span class="screen-score screen-priority-${Number(item.priority) || 0}">${esc(item.priorityLabel || '一般觀察')} · ${item.score} 分</span></div><div class="screen-state">${esc(item.status)}</div><div class="screen-levels"><span>買入觀察區 <b>${marketRefMoney(item.entryLow)} – ${marketRefMoney(item.entryHigh)}</b></span><span>風險失效價 <b>${marketRefMoney(item.stop)}</b></span><span>假設停利 1R / 2R <b>${marketRefMoney(target1)} / ${marketRefMoney(target2)}</b></span></div><div class="screen-sizing"><b>部位試算（假設單檔使用整筆預算）</b><div><span>估算買入 <strong>${unitShares.toLocaleString('zh-TW')} 股</strong></span><span>假設進場均價 <strong>${marketRefMoney(entry)}</strong></span><span>預估投入 <strong>${money(invested)}</strong></span><span>觸及失效價估損 <strong>${money(plannedLoss)}</strong></span><span>全數停利 1R 毛利 <strong>${money(gross1)}</strong></span><span>全數停利 2R 毛利 <strong>${money(gross2)}</strong></span></div>${noSharesReason ? `<small class="sizing-warning">${noSharesReason}</small>` : ''}</div><div class="screen-reasons"><span>RSI ${item.rsi == null ? '資料不足' : Number(item.rsi).toFixed(1)}</span><span>${item.smaTrend ? '均線偏多' : '均線未偏多'}</span><span>${item.improving ? 'MACD 動能改善' : 'MACD 動能未改善'}</span><span>${item.volumeOK ? '成交量放大' : '量能未達確認'}</span></div><div class="candidate-links screen-links"><a href="${esc(newsUrl)}" target="_blank" rel="noopener noreferrer">相關新聞 ↗</a><a href="${esc(noticeUrl)}" target="_blank" rel="noopener noreferrer">公司公告 ↗</a></div></article>`;
     }).join('') + `<nav class="screen-pagination" aria-label="候選股分頁"><span>第 ${currentPage} / ${pageCount} 頁 · 共 ${candidates.length.toLocaleString('zh-TW')} 檔</span><div><button type="button" class="secondary-button" data-screen-page="${currentPage - 1}" ${currentPage <= 1 ? 'disabled' : ''}>上一頁</button><button type="button" class="secondary-button" data-screen-page="${currentPage + 1}" ${currentPage >= pageCount ? 'disabled' : ''}>下一頁</button></div></nav>`;
+    container.querySelectorAll('.screen-row').forEach((node, index) => {
+      const item = shown[index], code = String(item.code), watched = state.watchlist.includes(code);
+      node.querySelector('.screen-reasons').insertAdjacentHTML('afterend', screenScoreDetails(item));
+      node.querySelector('.screen-links').insertAdjacentHTML('afterbegin', `<button type="button" class="secondary-button" data-screen-watch="${esc(code)}" ${watched ? 'disabled' : ''}>${watched ? '已加入自選' : '＋ 加入自選'}</button>`);
+    });
   }
   $('screenContent').addEventListener('click', (event) => {
+    const add = event.target.closest('[data-screen-watch]');
+    if (add && !state.watchlist.includes(add.dataset.screenWatch)) {
+      state.watchlist.push(add.dataset.screenWatch);
+      state.watchlistGroups[add.dataset.screenWatch] = '觀察中';
+      persist(); renderStockWatchlist();
+      add.disabled = true; add.textContent = '已加入自選';
+      showToast('已加入自選「觀察中」。');
+      return;
+    }
     const button = event.target.closest('[data-screen-page]');
     if (button && !button.disabled && screenCandidateResults) renderScreenCandidates(screenCandidateResults.data, screenCandidateResults.sizing, Number(button.dataset.screenPage));
   });
   [['screenPriceUnlimited', 'screenPriceLimit'], ['screenBudgetUnlimited', 'screenBudget'], ['screenLossUnlimited', 'screenMaxLoss']].forEach(([toggleId, inputId]) => {
     $(toggleId).addEventListener('change', () => { const input = $(inputId); input.disabled = $(toggleId).checked; if (input.disabled) input.value = ''; });
+  });
+  $('saveScreenPreset').addEventListener('click', () => {
+    const name = prompt('為這組篩選條件命名')?.trim().slice(0, 40);
+    if (!name) return;
+    const existing = screenPresets().find((row) => row.name === name);
+    if (!existing && screenPresets().length >= 10) return showToast('最多儲存 10 組條件。請先刪除一組。');
+    const fields = Object.fromEntries(screenPresetFields.map((id) => {
+      const input = $(id);
+      return [id, input.type === 'checkbox' ? input.checked : input.value];
+    }));
+    const id = existing?.id || crypto.randomUUID();
+    state.settings.screenPresets = [...screenPresets().filter((row) => row.id !== id), { id, name, fields }];
+    persist(); renderScreenPresets();
+    $('screenPreset').value = id;
+    $('removeScreenPreset').disabled = false;
+    showToast('已儲存篩選條件。');
+  });
+  $('screenPreset').addEventListener('change', () => {
+    const row = screenPresets().find((preset) => preset.id === $('screenPreset').value);
+    $('removeScreenPreset').disabled = !row;
+    if (!row) return;
+    for (const id of screenPresetFields) {
+      const input = $(id);
+      if (input.type === 'checkbox') input.checked = row.fields[id] === true;
+      else input.value = row.fields[id] ?? '';
+    }
+    screenPresetFields.filter((id) => id.endsWith('Unlimited')).forEach((id) => $(id).dispatchEvent(new Event('change')));
+    showToast('已載入條件，按「篩選並試算」開始查詢。');
+  });
+  $('removeScreenPreset').addEventListener('click', () => {
+    state.settings.screenPresets = screenPresets().filter((row) => row.id !== $('screenPreset').value);
+    persist(); renderScreenPresets(); showToast('已刪除所選條件。');
   });
   $('screenForm').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -674,7 +760,17 @@
     if (state.holdings.length === 1) $('priceStock').value = state.holdings[0].name;
     $('priceDialog').showModal();
   }
-  ['addHolding','addHoldingTop','emptyAdd'].forEach((id) => $(id).addEventListener('click', () => openHolding()));
+  ['addHolding','emptyAdd'].forEach((id) => $(id).addEventListener('click', () => openHolding()));
+  $('addHoldingTop').addEventListener('click', () => {
+    const market = $('overviewMarketFilter').value;
+    if (market === 'tw') openHolding();
+    else {
+      $('stockLookupMarket').value = market;
+      $('stockLookupMarket').dispatchEvent(new Event('change'));
+      showPage('stockDesk', true);
+      $('stockLookupInput').focus();
+    }
+  });
   $('addPrice').addEventListener('click', openPrice);
   setupStockLookupMarkets();
   $('overviewMarketFilter').addEventListener('change', () => { renderOverviewHoldings(); refreshSelectedMarketHoldings(); });
@@ -944,40 +1040,82 @@
     } finally { button.disabled = false; $('assistantInput').focus(); }
   });
   checkAssistantStatus();
+  let topupRequest = 0;
+  function renderTopupHoldingOptions() {
+    const picker = $('topupHolding'), selected = picker.value;
+    picker.innerHTML = '<option value="">自行輸入台股</option>' + state.holdings.map((item) =>
+      `<option value="${esc(item.id)}">${esc(item.name)} · ${esc(holdingCurrency(item))}</option>`).join('');
+    if (state.holdings.some((item) => item.id === selected)) picker.value = selected;
+    else if (selected) selectTopupHolding(null);
+  }
+  function selectTopupHolding(item) {
+    topupRequest += 1;
+    $('topupHolding').value = item?.id || '';
+    $('topupSymbol').readOnly = Boolean(item);
+    $('topupMode').disabled = false;
+    const holdingMode = $('topupMode').querySelector('[value="holding"]');
+    holdingMode.hidden = !item;
+    $('topupMode').querySelector('[value="fugle"]').disabled = Boolean(item && holdingMarket(item) !== 'tw');
+    $('topupMode').querySelector('[value="ollama"]').disabled = Boolean(item && holdingMarket(item) !== 'tw');
+    $('topupSymbol').value = item ? item.symbol || stockCode(item.name) || item.name : '';
+    $('topupAverageCost').value = item?.cost ?? '';
+    $('topupCurrentShares').value = item?.shares ?? '';
+    $('topupBudget').value = '';
+    $('topupShareUnit').value = '1';
+    $('topupConsent').checked = false;
+    $('topupResult').hidden = true;
+    $('addTopupPriceAlert').disabled = true;
+    $('topupSubmit').disabled = false;
+    const overseas = Boolean(item && holdingMarket(item) !== 'tw');
+    $('topupShareUnit').querySelector('[value="1000"]').disabled = overseas;
+    $('topupMode').value = item ? 'holding' : 'fugle';
+    $('topupFeeRate').value = overseas ? '0' : '0.1425';
+    $('topupTaxRate').value = overseas ? '0' : '0.3';
+    $('topupHoldingInfo').textContent = item ? `${marketLabels[holdingMarket(item)]} · ${holdingCurrency(item)}${overseas ? ' · 請填寫你的券商費率' : ''}` : '';
+    $('topupStatus').textContent = item ? '持有股數與成本已帶入。請輸入加碼預算。' : '填寫股數、成本及預算開始試算。';
+    $('addTopupReviewReminder').disabled = overseas;
+    updateTopupMode();
+  }
+  $('topupHolding').addEventListener('change', () => selectTopupHolding(state.holdings.find((item) => item.id === $('topupHolding').value)));
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-simulate-holding]');
+    if (!button) return;
+    const item = state.holdings.find((holding) => holding.id === button.dataset.simulateHolding);
+    if (!item) return;
+    showPage('topup', true);
+    selectTopupHolding(item);
+    $('topupBudget').focus();
+  });
   function updateTopupMode() {
-    const useOllama = $('topupMode').value === 'ollama';
+    const mode = $('topupMode').value, useOllama = mode === 'ollama';
     $('topupConsentRow').hidden = !useOllama;
-    $('topupModeHint').textContent = useOllama
+    $('topupSubmit').textContent = mode === 'holding' ? '試算持倉' : '查行情並試算';
+    $('topupModeHint').textContent = mode === 'holding'
+      ? '以持倉最近取得的報價或備用價格估算，並使用持倉原幣。'
+      : useOllama
       ? '優先用 Fugle 取得價格與歷史日 K；Fugle 報價失敗時改用 TWSE／TPEx 最近收盤價，再由 Ollama 整理趨勢與風險。'
       : '優先使用 Fugle 行情；無法取得時改用 TWSE／TPEx 最近收盤價，計算預算股數與加碼後均價。備援收盤價不是盤中即時價。';
   }
   $('topupMode').addEventListener('change', updateTopupMode);
   function topupScenarioValues(item, buyPrice) {
-    const price = Math.max(0.01, Number(buyPrice) || item.price), unit = Number(item.shareUnit) || 1;
-    const shares = Math.floor(Number(item.budget) / (price * unit)) * unit;
-    const addedCost = shares * price, totalShares = Number(item.currentShares) + shares;
-    const totalCost = Number(item.averageCost) * Number(item.currentShares) + addedCost;
-    const averageCost = totalShares ? totalCost / totalShares : 0;
-    const commission = Number(item.commissionRatePercent || 0) / 100, tax = Number(item.sellTaxRatePercent || 0) / 100;
-    const buyCommission = addedCost * commission, marketValue = Number(item.price) * totalShares;
-    const saleCommission = marketValue * commission, saleTax = marketValue * tax;
-    const transactionCosts = buyCommission + saleCommission + saleTax;
-    const pnl = marketValue - totalCost - transactionCosts;
-    const breakEven = totalShares && commission + tax < 1 ? (totalCost + buyCommission) / (totalShares * (1 - commission - tax)) : 0;
-    const costBasisWithBuyFee = totalCost + buyCommission;
-    return { price, shares, addedCost, totalShares, totalCost, averageCost, pnl, pnlPercent: costBasisWithBuyFee ? pnl / costBasisWithBuyFee * 100 : 0, remaining: Number(item.budget) - addedCost, transactionCosts, breakEven };
+    return calculateTopup(item, { buyPrice: Number(buyPrice) || item.price });
   }
   function topupScenarioMarkup(item, selectedPrice = item.price) {
-    const quotePrice = Number(item.price), minimum = Math.max(0.01, Number((quotePrice * 0.8).toFixed(2))), maximum = Number((quotePrice * 1.2).toFixed(2));
+    const money = (value) => formatScenarioMoney(value, item.currency);
+    const quotePrice = Number(item.price), step = quotePrice < 1 ? 0.0001 : 0.01;
+    const minimum = Math.max(step, Math.round(quotePrice * 0.8 / step) * step);
+    const maximum = Math.max(minimum + step, Math.round(quotePrice * 1.2 / step) * step);
+    const precision = step < 0.01 ? 4 : 2;
     const scenario = topupScenarioValues(item, selectedPrice);
     const pnlClass = scenario.pnl < 0 ? 'negative' : 'positive';
     const comparison = [...new Set([minimum, quotePrice, maximum])].map((buyPrice) => {
       const option = topupScenarioValues(item, buyPrice), className = option.pnl < 0 ? 'negative' : 'positive';
       return `<article><small>假設買入 ${money(buyPrice)}</small><b>${option.shares.toLocaleString('zh-TW')} 股</b><span>均價 ${money(option.averageCost)}／股</span><strong class="${className}">${money(option.pnl)}</strong></article>`;
     }).join('');
-    return `<section class="topup-scenario"><div class="topup-scenario-heading"><div><b>買入價格情境拉桿</b><small>以下為 ${esc(item.quoteSource || '目前報價')} 價格上下 20% 的假設區間；基準價格固定為 ${money(quotePrice)}，調整後即時重算。</small></div><strong data-scenario-price>${money(scenario.price)}<small>假設加碼買入價／股</small></strong></div><label class="topup-slider-label" for="topupPriceSlider"><span>${money(minimum)}</span><input id="topupPriceSlider" type="range" min="${minimum.toFixed(2)}" max="${maximum.toFixed(2)}" step="0.01" value="${scenario.price.toFixed(2)}" aria-label="調整假設加碼買入價"><span>${money(maximum)}</span></label><div class="topup-scenario-grid"><article><small>預算可買股數</small><b data-scenario-shares>${scenario.shares.toLocaleString('zh-TW')} 股</b></article><article><small>加碼後均價（未含交易費）</small><b data-scenario-average>${money(scenario.averageCost)}／股</b></article><article><small>以 ${esc(item.quoteSource || '目前報價')} 價格估算淨損益</small><b data-scenario-pnl class="${pnlClass}">${money(scenario.pnl)}（${scenario.pnlPercent >= 0 ? '+' : ''}${scenario.pnlPercent.toFixed(2)}%）</b></article><article><small>估算損益兩平價</small><b data-scenario-breakeven>${money(scenario.breakEven)}／股</b></article><article><small>估計交易成本</small><b data-scenario-fees>${money(scenario.transactionCosts)}</b></article><article><small>加碼使用金額／剩餘</small><b data-scenario-budget>${money(scenario.addedCost)}／${money(scenario.remaining)}</b></article></div>${topupBreakevenMarkup(item, scenario)}<button type="button" id="saveTopupPriceAlert" class="secondary-button topup-price-alert-button">將 ${money(scenario.price)} 設為到價觀察提醒</button>${topupScenarioChart(item, minimum, maximum, scenario.price)}<div class="topup-comparisons"><b>低／現價／高三種買入價格比較</b><div>${comparison}</div></div><small class="topup-scenario-note">淨損益已估算加碼買進手續費、按目前市值估算的賣出手續費與證交稅。現有平均成本視為既有成本基礎；券商最低手續費、個人實際折扣與滑價可能造成差異。</small></section>`;
+    return `<section class="topup-scenario"><div class="topup-scenario-heading"><div><b>買入價格情境拉桿</b><small>以下為 ${esc(item.quoteSource || '目前報價')} 價格上下 20% 的假設區間；基準價格固定為 ${money(quotePrice)}，調整後即時重算。</small></div><strong data-scenario-price>${money(scenario.price)}<small>假設加碼買入價／股</small></strong></div><label class="topup-slider-label" for="topupPriceSlider"><span>${money(minimum)}</span><input id="topupPriceSlider" type="range" min="${minimum.toFixed(precision)}" max="${maximum.toFixed(precision)}" step="${step}" value="${scenario.price.toFixed(precision)}" aria-label="調整假設加碼買入價"><span>${money(maximum)}</span></label><div class="topup-scenario-grid"><article><small>預算可買股數</small><b data-scenario-shares>${scenario.shares.toLocaleString('zh-TW')} 股</b></article><article><small>加碼後均價（未含交易費）</small><b data-scenario-average>${money(scenario.averageCost)}／股</b></article><article><small>以 ${esc(item.quoteSource || '目前報價')} 價格估算淨損益</small><b data-scenario-pnl class="${pnlClass}">${money(scenario.pnl)}（${scenario.pnlPercent >= 0 ? '+' : ''}${scenario.pnlPercent.toFixed(2)}%）</b></article><article><small>估算損益兩平價</small><b data-scenario-breakeven>${money(scenario.breakEven)}／股</b></article><article><small>估計交易成本</small><b data-scenario-fees>${money(scenario.transactionCosts)}</b></article><article><small>加碼含費支出／預算餘額</small><b data-scenario-budget>${money(scenario.purchaseTotal)}／${money(scenario.remaining)}</b></article></div>${topupBreakevenMarkup(item, scenario)}<button type="button" id="saveTopupPriceAlert" class="secondary-button topup-price-alert-button" ${item.market !== 'tw' ? 'hidden' : ''}>將 ${money(scenario.price)} 設為到價觀察提醒</button>${topupScenarioChart(item, minimum, maximum, scenario.price)}<div class="topup-comparisons"><b>低／現價／高三種買入價格比較</b><div>${comparison}</div></div><small class="topup-scenario-note">淨損益已估算加碼買進手續費、按目前市值估算的賣出手續費與證交稅。現有平均成本視為既有成本基礎；券商最低手續費、個人實際折扣與滑價可能造成差異。</small></section>`;
   }
   function topupBreakevenMarkup(item, scenario) {
+    const money = (value) => formatScenarioMoney(value, item.currency);
     const rates = [0.03, 0.06, 0.10], current = Number(item.price), breakEven = Number(scenario.breakEven);
     const rows = rates.map((rate) => {
       if (breakEven <= current) return `<article><small>假設年報酬 ${(rate * 100).toFixed(0)}%</small><b>現價已達估算損平線</b><span>僅按此情境與目前報價判斷</span></article>`;
@@ -989,6 +1127,7 @@
     return `<div class="topup-breakeven"><b>回本時間情境（從目前報價起算）</b><div>${rows}</div><small>假設價格每年固定上漲 3%／6%／10%，未計入未來加碼、股利、價格波動或其他成本；這是數學情境，不是預測或保證。</small></div>`;
   }
   function topupScenarioChart(item, minimum, maximum, selectedPrice) {
+    const money = (value) => formatScenarioMoney(value, item.currency);
     const points = Array.from({ length: 41 }, (_, index) => {
       const pointPrice = minimum + (maximum - minimum) * index / 40;
       return { pnl: topupScenarioValues(item, pointPrice).pnl };
@@ -1003,6 +1142,7 @@
     return `<div class="topup-chart-wrap"><svg class="topup-scenario-chart" viewBox="0 0 620 160" role="img" aria-label="假設加碼買入價與估算未實現損益關係圖"><line x1="38" x2="582" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" class="topup-chart-zero"/><path d="${path}" class="topup-chart-line"/><line x1="${markerX.toFixed(1)}" x2="${markerX.toFixed(1)}" y1="12" y2="128" class="topup-chart-marker-line"/><circle cx="${markerX.toFixed(1)}" cy="${markerY.toFixed(1)}" r="5" class="topup-chart-marker ${markerPnl < 0 ? 'negative' : 'positive'}"/><text x="38" y="151">${money(minimum)}</text><text x="582" y="151" text-anchor="end">${money(maximum)}</text><text x="38" y="10">${money(maxY)}</text><text x="582" y="10" text-anchor="end">${money(minY)}</text></svg><small>橫軸：假設加碼買入價　·　縱軸：以 ${esc(item.quoteSource || '目前報價')} 價格估算的總未實現損益</small></div>`;
   }
   function updateTopupScenario(item, selectedPrice) {
+    const money = (value) => formatScenarioMoney(value, item.currency);
     const section = $('topupPriceSlider')?.closest('.topup-scenario');
     if (!section) return;
     const minimum = Number($('topupPriceSlider').min), maximum = Number($('topupPriceSlider').max), scenario = topupScenarioValues(item, selectedPrice);
@@ -1012,7 +1152,7 @@
     const pnl = section.querySelector('[data-scenario-pnl]');
     pnl.textContent = `${money(scenario.pnl)}（${scenario.pnlPercent >= 0 ? '+' : ''}${scenario.pnlPercent.toFixed(2)}%）`;
     pnl.classList.toggle('negative', scenario.pnl < 0); pnl.classList.toggle('positive', scenario.pnl >= 0);
-    section.querySelector('[data-scenario-budget]').textContent = `${money(scenario.addedCost)}／${money(scenario.remaining)}`;
+    section.querySelector('[data-scenario-budget]').textContent = `${money(scenario.purchaseTotal)}／${money(scenario.remaining)}`;
     section.querySelector('[data-scenario-breakeven]').textContent = `${money(scenario.breakEven)}／股`;
     section.querySelector('[data-scenario-fees]').textContent = money(scenario.transactionCosts);
     section.querySelector('.topup-breakeven').outerHTML = topupBreakevenMarkup(item, scenario);
@@ -1020,10 +1160,45 @@
     if (alertButton) alertButton.textContent = `將 ${money(scenario.price)} 設為到價觀察提醒`;
     section.querySelector('.topup-chart-wrap').outerHTML = topupScenarioChart(item, minimum, maximum, scenario.price);
   }
-  function bindTopupScenario(item) {
+  function scenarioPortfolio(item, holding) {
+    if (!holding) return null;
+    const portfolio = { otherSameSymbolShares: 0, otherStockValue: 0 };
+    const key = holdingMarket(holding) === 'tw' ? stockCode(holding.name) : internationalQuoteKey(holding);
+    for (const entry of state.holdings) {
+      if (entry.id === holding.id || holdingMarket(entry) !== holdingMarket(holding) || holdingCurrency(entry) !== item.currency) continue;
+      const entryKey = holdingMarket(entry) === 'tw' ? stockCode(entry.name) : internationalQuoteKey(entry);
+      if (key && entryKey === key) portfolio.otherSameSymbolShares += num(entry.shares);
+      else portfolio.otherStockValue += livePrice(entry) * num(entry.shares);
+    }
+    return portfolio;
+  }
+  function saveScenarioDraft(item, scenario) {
+    const money = (value) => formatScenarioMoney(value, item.currency);
+    const rows = [
+      `參考價格 ${money(item.price)}／股（${item.quoteSource || '持倉價格'}，${item.quoteDate || item.quoteUpdatedAt || '日期未提供'}）`,
+      `原持有 ${item.currentShares} 股，平均成本 ${money(item.averageCost)}／股，預算 ${money(item.budget)}。`,
+      `假設以 ${money(scenario.buyPrice)} 買入，未來股價 ${money(scenario.futurePrice)}（${pct(scenario.change)}）。`,
+      `不加碼估算淨損益 ${money(scenario.baseline.pnl)}。加碼 ${scenario.added.shares} 股、含費支出 ${money(scenario.added.purchaseTotal)}，估算淨損益 ${money(scenario.added.pnl)}。`,
+      `加碼前後損益兩平價 ${money(scenario.baseline.breakEven)} → ${money(scenario.added.breakEven)}。`
+    ];
+    if (scenario.baselineWeight != null && scenario.addedWeight != null) rows.push(`同市場、同幣別持倉比重 ${scenario.baselineWeight.toFixed(1)}% → ${scenario.addedWeight.toFixed(1)}%。`);
+    $('journalForm').reset();
+    $('journalTitle').value = (`${item.symbol} 持倉情境試算`).slice(0, 80);
+    $('journalStock').value = (`${item.symbol} ${item.name || ''}`).trim().slice(0, 30);
+    $('journalThesis').value = rows.join('\n');
+    $('journalDialog').showModal();
+  }
+  function bindTopupScenario(item, holding) {
     const slider = $('topupPriceSlider');
     if (!slider) return;
-    slider.addEventListener('input', () => updateTopupScenario(item, Number(slider.value)));
+    const comparison = mountScenarioComparison($('topupComparison'), {
+      item, buyPrice: () => Number(slider.value), portfolio: scenarioPortfolio(item, holding),
+      onSave: (scenario) => saveScenarioDraft(item, scenario)
+    });
+    slider.addEventListener('input', () => {
+      updateTopupScenario(item, Number(slider.value));
+      comparison.refresh();
+    });
     $('saveTopupPriceAlert')?.addEventListener('click', () => {
       const target = Number(slider.value), stock = `${item.symbol} ${item.name || ''}`.trim();
       state.alerts.push({ id: crypto.randomUUID(), stock, direction: 'below', target, active: true, createdAt: isoToday(), source: 'topup' });
@@ -1071,28 +1246,45 @@
     if (mode === 'ollama' && !aiConsent) { $('topupStatus').textContent = '使用 Ollama 分析前，請先閱讀並勾選資料傳送同意。'; $('topupConsent').focus(); return; }
     const commissionRatePercent = Number($('topupFeeRate').value), sellTaxRatePercent = Number($('topupTaxRate').value);
     if (!Number.isFinite(commissionRatePercent) || commissionRatePercent < 0 || commissionRatePercent > 1 || !Number.isFinite(sellTaxRatePercent) || sellTaxRatePercent < 0 || sellTaxRatePercent > 5) { $('topupStatus').textContent = '請確認手續費率為 0–1%，賣出證交稅率為 0–5%。'; return; }
-    const button = $('topupSubmit'); button.disabled = true; button.textContent = '正在查詢並計算…';
+    const request = ++topupRequest;
+    const holding = state.holdings.find((item) => item.id === $('topupHolding').value);
+    const input = {
+      symbolOrName: $('topupSymbol').value.trim(), averageCost: Number($('topupAverageCost').value),
+      currentShares: Number($('topupCurrentShares').value), budget: Number($('topupBudget').value),
+      shareUnit: Number($('topupShareUnit').value), commissionRatePercent, sellTaxRatePercent
+    };
+    const button = $('topupSubmit'); button.disabled = true; button.textContent = '正在計算…';
     $('topupStatus').textContent = '正在取得可用行情，整理加碼股數…'; $('topupResult').hidden = true;
-    $('topupConsent').checked = false;
+    $('topupConsent').checked = false; $('addTopupPriceAlert').disabled = true;
     try {
-      const { data } = await supabaseClient?.auth.getSession() || {};
-      const headers = { 'Content-Type': 'application/json' };
-      if (data?.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
-      const response = await fetch('/api/topup/calculate', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({
-        symbolOrName: $('topupSymbol').value.trim(), averageCost: Number($('topupAverageCost').value), currentShares: Number($('topupCurrentShares').value),
-        budget: Number($('topupBudget').value), shareUnit: Number($('topupShareUnit').value),
-        commissionRatePercent, sellTaxRatePercent, mode, aiConsent
-      }) });
-      const dataResult = await response.json();
-      if (!response.ok) throw new Error(dataResult.error || '加碼試算失敗，請稍後重試。');
-      const item = dataResult.result;
-      $('addTopupPriceAlert').disabled = false;
-      $('topupResult').innerHTML = `<div class="topup-result-heading"><div><b>${esc(item.symbol)} ${esc(item.name || '')}</b><small>${esc(item.quoteDate || '行情日期未提供')} · ${esc(item.quoteUpdatedAt || '')} · ${esc(item.priceType)}</small></div><strong>${money(item.price)}<small>${esc(item.quoteSource || 'Fugle')} 價格參考</small></strong></div><div class="topup-result-grid"><article><small>預算可買股數</small><b>${Number(item.sharesToBuy).toLocaleString('zh-TW')} 股</b></article><article><small>實際使用金額</small><b>${money(item.addedCost)}</b></article><article><small>加碼後總股數</small><b>${Number(item.totalShares).toLocaleString('zh-TW')} 股</b></article><article><small>加碼後均價（未含交易費）</small><b>${money(item.newAverageCost)}／股</b></article><article><small>剩餘預算</small><b>${money(item.remainingBudget)}</b></article><article><small>目前市值估算淨損益</small><b class="${item.projectedUnrealizedPnl < 0 ? 'negative' : 'positive'}">${money(item.projectedUnrealizedPnl)}</b></article><article><small>估算損益兩平價</small><b>${money(item.estimatedBreakEvenPrice)}／股</b></article><article><small>預估交易成本</small><b>${money(item.estimatedTransactionCosts)}</b></article></div>${topupScenarioMarkup(item)}<small class="topup-calculation-note">股數依 ${item.shareUnit === 1000 ? '整張（1,000 股）' : '零股（1 股）'}計算；已依你設定的費率估算交易成本，不含券商最低手續費與滑價。</small>${dataResult.analysis ? `<section class="topup-analysis"><b>Ollama 趨勢觀察</b><p>${esc(formatAssistantText(dataResult.analysis))}</p></section>` : ''}`;
-      bindTopupScenario(item);
+      let dataResult;
+      if (mode === 'holding') {
+        if (!holding) throw new Error('請先選擇一筆持股。');
+        const price = livePrice(holding), quote = holdingQuote(holding);
+        if (!(price >= 0.0001)) throw new Error('請先在「我的持股」填寫有效的備用價格，或更新行情。');
+        dataResult = { mode, result: topupApiResult({
+          ...input, symbol: input.symbolOrName, name: holding.name, price, currency: holdingCurrency(holding),
+          market: holdingMarket(holding), quoteSource: quote ? quote.source || 'TWSE／TPEx' : '持倉備用價格',
+          quoteDate: quote?.date || quote?.datetime, priceType: quote ? '最近取得的持股行情' : '手動輸入的參考價格'
+        }) };
+      } else {
+        const { data } = await supabaseClient?.auth.getSession() || {};
+        const headers = { 'Content-Type': 'application/json' };
+        if (data?.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
+        const response = await fetch('/api/topup/calculate', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ ...input, mode, aiConsent }) });
+        dataResult = await response.json();
+        if (!response.ok) throw new Error(dataResult.error || '加碼試算失敗，請稍後重試。');
+      }
+      if (request !== topupRequest) return;
+      const item = { currency: 'TWD', market: 'tw', ...dataResult.result };
+      const money = (value) => formatScenarioMoney(value, item.currency);
+      $('addTopupPriceAlert').disabled = item.market !== 'tw';
+      $('topupResult').innerHTML = `<div class="topup-result-heading"><div><b>${esc(item.symbol)} ${esc(item.name || '')}</b><small>${esc(item.quoteDate || '行情日期未提供')} · ${esc(item.quoteUpdatedAt || '')} · ${esc(item.priceType)}</small></div><strong>${money(item.price)}<small>${esc(item.quoteSource || 'Fugle')} 價格參考</small></strong></div><div class="topup-result-grid"><article><small>預算可買股數</small><b>${Number(item.sharesToBuy).toLocaleString('zh-TW')} 股</b></article><article><small>加碼支出（含買入手續費）</small><b>${money(item.purchaseTotal)}</b></article><article><small>加碼後總股數</small><b>${Number(item.totalShares).toLocaleString('zh-TW')} 股</b></article><article><small>加碼後均價（未含交易費）</small><b>${money(item.newAverageCost)}／股</b></article><article><small>剩餘預算</small><b>${money(item.remainingBudget)}</b></article><article><small>目前市值估算淨損益</small><b class="${item.projectedUnrealizedPnl < 0 ? 'negative' : 'positive'}">${money(item.projectedUnrealizedPnl)}</b></article><article><small>估算損益兩平價</small><b>${money(item.estimatedBreakEvenPrice)}／股</b></article><article><small>買入手續費</small><b>${money(item.buyCommission)}</b></article></div><section id="topupComparison" class="scenario-comparison" aria-label="加碼方案比較"></section>${topupScenarioMarkup(item)}<small class="topup-calculation-note">股數依 ${item.shareUnit === 1000 ? '整張（1,000 股）' : '零股（1 股）'}計算；已依你設定的費率估算交易成本，不含券商最低手續費與滑價。</small>${dataResult.analysis ? `<section class="topup-analysis"><b>Ollama 趨勢觀察</b><p>${esc(formatAssistantText(dataResult.analysis))}</p></section>` : ''}`;
+      bindTopupScenario(item, holding);
       $('topupResult').hidden = false;
-      $('topupStatus').textContent = dataResult.mode === 'ollama' ? `計算完成；以下另附 Ollama 行情觀察。價格來源：${item.quoteSource || 'Fugle'}。` : `報價試算完成。價格來源：${item.quoteSource || 'Fugle'}。`;
-    } catch (error) { $('topupStatus').textContent = error.message || '連線失敗，請稍後重試。'; }
-    finally { button.disabled = false; button.textContent = '查行情並試算'; }
+      $('topupStatus').textContent = dataResult.mode === 'ollama' ? `計算完成；以下另附 Ollama 行情觀察。價格來源：${item.quoteSource || 'Fugle'}。` : `試算完成。價格來源：${item.quoteSource || 'Fugle'}。`;
+    } catch (error) { if (request === topupRequest) $('topupStatus').textContent = error.message || '連線失敗，請稍後重試。'; }
+    finally { if (request === topupRequest) { button.disabled = false; updateTopupMode(); } }
   });
   updateTopupMode();
   $('loadTrend').addEventListener('click', async () => {
@@ -1368,7 +1560,7 @@
     $('watchlist').hidden = true; $('references').hidden = true;
     const mainSections = [...document.querySelectorAll('.main-content > section')];
     mainSections.forEach((section) => { section.hidden = true; });
-    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = false; $('portfolioSnapshot').hidden = false; $('workflowStrip').hidden = false; $('insights').hidden = false; $('watchlist').hidden = false; $('references').hidden = false; }
+    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = $('overviewMarketFilter').value !== 'tw'; $('portfolioSnapshot').hidden = false; $('workflowStrip').hidden = false; $('insights').hidden = false; $('watchlist').hidden = false; $('references').hidden = false; }
     else if (page === 'workspace') { $('workspace').hidden = false; document.querySelector('.lower-grid').hidden = true; renderWorkspacePanels(); }
     else if (page === 'watchlist' || page === 'references') {
       const grid = document.querySelector('.lower-grid'); grid.hidden = false; grid.classList.add('single-page');

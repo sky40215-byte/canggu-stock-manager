@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { topupApiResult } from '../frontend/portfolio-math.js';
 
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
@@ -715,7 +716,16 @@ function analyzeScreenCandles(quote, candles, horizon) {
   const horizonReturn = baseline?.close > 0 ? (last.close / baseline.close - 1) * 100 : 0, bullish = last.sma20 != null && last.sma60 != null && last.close > last.sma20 && last.sma20 > last.sma60;
   const improving = last.macdHistogram != null && previous?.macdHistogram != null && last.macdHistogram > previous.macdHistogram;
   const rsi = last.rsi14;
-  const score = (horizonReturn > 0 ? 1 : 0) + (horizonReturn > 2 ? 1 : 0) + (bullish ? 2 : 0) + (rsi >= 40 && rsi <= 65 ? 1 : 0) + (improving ? 1 : 0) + (volumeOK ? 1 : 0) - (rsi >= 75 ? 2 : 0);
+  const scoreBreakdown = [
+    { label: '區間漲幅大於 0%', points: horizonReturn > 0 ? 1 : 0, missing: !(baseline?.close > 0) },
+    { label: '區間漲幅大於 2%', points: horizonReturn > 2 ? 1 : 0, missing: !(baseline?.close > 0) },
+    { label: '收盤價高於 20 日均線，且 20 日均線高於 60 日均線', points: bullish ? 2 : 0, missing: last.sma20 == null || last.sma60 == null },
+    { label: 'RSI 介於 40 至 65', points: rsi >= 40 && rsi <= 65 ? 1 : 0, missing: rsi == null },
+    { label: 'MACD 柱狀值較前一日上升', points: improving ? 1 : 0, missing: last.macdHistogram == null || previous?.macdHistogram == null },
+    { label: '成交量達近 20 日均量 1.2 倍', points: volumeOK ? 1 : 0, missing: !(averageVolume > 0) || !(last.volume > 0) },
+    { label: 'RSI 達 75 以上', points: rsi >= 75 ? -2 : 0, missing: rsi == null }
+  ];
+  const score = scoreBreakdown.reduce((sum, row) => sum + row.points, 0);
   const breakout = last.close > resistance && bullish && rsi >= 50 && rsi <= 68 && improving && volumeOK;
   const entryLow = breakout ? resistance : support, entryHigh = breakout ? resistance + atr * 0.25 : support + atr * 0.5, stop = Math.max(0, (breakout ? resistance : support) - atr * 0.5);
   const entry = (entryLow + entryHigh) / 2, risk = Math.max(entry - stop, atr * 0.25), target1 = entry + risk, target2 = entry + risk * 2;
@@ -726,7 +736,7 @@ function analyzeScreenCandles(quote, candles, horizon) {
   const priorityLabel = pullback ? '回測區內・條件改善' : breakout && !overextended ? '突破量價確認' : nearBuyZone ? '接近觀察區・趨勢偏多' : overextended ? '高於觀察區・避免追價' : '一般觀察';
   const status = pullback ? '回測支撐觀察區，等待轉強確認' : breakout ? (overextended ? '突破成立但已高於觀察區，避免追價' : '突破量價條件符合（以最近日 K 計算）') : overextended ? '現價高於觀察區，避免追價' : score >= 5 ? '趨勢條件較佳，等待價格進入觀察區' : '條件未齊，列為觀察';
   const zoneDistance = Math.abs(last.close - entry) / Math.max(atr, 0.01);
-  return { code: quote.code, name: quote.name, market: quote.market, price: quote.price, date: last.date, turnover: quote.turnover, horizonReturn, score, priority, priorityLabel, zoneDistance, rsi, entryLow, entryHigh, stop, target1, target2, support, resistance, status, volumeOK, smaTrend: bullish, improving, breakout, pullback };
+  return { code: quote.code, name: quote.name, market: quote.market, price: quote.price, date: last.date, turnover: quote.turnover, horizonReturn, score, scoreBreakdown, priority, priorityLabel, zoneDistance, rsi, entryLow, entryHigh, stop, target1, target2, support, resistance, status, volumeOK, smaTrend: bullish, improving, breakout, pullback };
 }
 async function runScreenJob(job, universe) {
   let next = 0, failures = 0;
@@ -866,21 +876,7 @@ const server = http.createServer(async (req, res) => {
       const quoteUpdatedAt = quote.quoteUpdatedAt || (Number.isFinite(quoteTimestamp) && quoteTimestamp > 0
         ? new Date(quoteTimestamp / 1000).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })
         : '來源未提供更新時間');
-      const sharesToBuy = Math.floor(budget / (price * shareUnit)) * shareUnit;
-      const addedCost = sharesToBuy * price;
-      const totalShares = currentShares + sharesToBuy;
-      const totalCost = averageCost * currentShares + addedCost;
-      const commissionRate = commissionRatePercent / 100, sellTaxRate = sellTaxRatePercent / 100;
-      const buyCommission = addedCost * commissionRate;
-      const estimatedSaleValue = price * totalShares;
-      const estimatedSaleCommission = estimatedSaleValue * commissionRate;
-      const estimatedSaleTax = estimatedSaleValue * sellTaxRate;
-      const estimatedTransactionCosts = buyCommission + estimatedSaleCommission + estimatedSaleTax;
-      const estimatedNetPnl = estimatedSaleValue - totalCost - estimatedTransactionCosts;
-      const estimatedBreakEvenPrice = totalShares > 0 && commissionRate + sellTaxRate < 1
-        ? (totalCost + buyCommission) / (totalShares * (1 - commissionRate - sellTaxRate))
-        : null;
-      const result = {
+      const result = topupApiResult({
         symbol: quote.symbol || symbol,
         name: quote.name || resolvedName,
         price,
@@ -893,21 +889,8 @@ const server = http.createServer(async (req, res) => {
         budget,
         shareUnit,
         commissionRatePercent,
-        sellTaxRatePercent,
-        sharesToBuy,
-        addedCost,
-        remainingBudget: budget - addedCost,
-        totalShares,
-        newAverageCost: totalShares ? totalCost / totalShares : averageCost,
-        buyCommission,
-        estimatedSaleCommission,
-        estimatedSaleTax,
-        estimatedTransactionCosts,
-        estimatedBreakEvenPrice,
-        projectedUnrealizedPnl: estimatedNetPnl,
-        projectedUnrealizedPnlPercent: totalCost + buyCommission > 0 ? estimatedNetPnl / (totalCost + buyCommission) * 100 : 0,
-        feesAndTaxIncluded: true
-      };
+        sellTaxRatePercent
+      });
       if (mode === 'fugle') return send(res, 200, { mode, result });
       let trend = null;
       try { trend = await fugleTrend(symbol, 150); }

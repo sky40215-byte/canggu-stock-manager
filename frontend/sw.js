@@ -1,9 +1,13 @@
-const CACHE_NAME = 'canggu-app-shell-v13';
+const CACHE_NAME = 'canggu-app-shell-v14';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/styles.css?v=20261125b',
-  '/app.js?v=20261125b',
+  '/styles.css?v=20261125c',
+  '/app.js?v=20261125c',
+  '/portfolio-math.js?v=20261125c',
+  '/scenario-compare.js?v=20261125c',
+  '/demo.html',
+  '/demo.js?v=20261125c',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -25,9 +29,9 @@ self.addEventListener('fetch', (event) => {
 
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then((response) => {
-      if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', response.clone()));
+      if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(url.pathname === '/demo.html' ? '/demo.html' : '/index.html', response.clone()));
       return response;
-    }).catch(async () => (await caches.match('/index.html')) || Response.error()));
+    }).catch(async () => (await caches.match(url.pathname === '/demo.html' ? '/demo.html' : '/index.html')) || Response.error()));
     return;
   }
 
