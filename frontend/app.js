@@ -2,7 +2,7 @@ import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.j
 import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
-import { mountHoldingImport } from './holding-import-dialog.js?v=20261126a';
+import { mountHoldingImport } from './holding-import-dialog.js?v=20261126c';
 
 (() => {
   'use strict';
@@ -862,7 +862,11 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126a';
         body: JSON.stringify({ provider, aiConsent: true, image })
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok || !Array.isArray(result.rows)) throw new Error(result.error || '暫時無法辨識圖片，請稍後再試。');
+      if (!response.ok || !Array.isArray(result?.rows)) {
+        const scanError = new Error(result?.error || '暫時無法辨識圖片，請稍後再試。');
+        scanError.retryAfterSeconds = result?.retryAfterSeconds;
+        throw scanError;
+      }
       return result.rows;
     },
     saveHoldings: (rows) => {

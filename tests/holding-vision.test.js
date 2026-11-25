@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { holdingVisionRequest, holdingVisionRows, isHoldingJpeg } from '../backend/holding-vision.mjs';
+import { holdingVisionRequest, holdingVisionRows, isHoldingJpeg, openAIHoldingRateError } from '../backend/holding-vision.mjs';
 
 function candidate(rows) {
   return { candidates: [{ content: { parts: [{ text: 'reasoning', thought: true }, { text: JSON.stringify({ rows }) }] } }] };
@@ -57,4 +57,28 @@ test('reads completed OpenAI message output and rejects incomplete or refused re
   assert.throws(() => holdingVisionRows('openai', { status: 'completed', output: [
     { type: 'message', content: [{ type: 'refusal', refusal: 'Refused' }] }
   ] }), { status: 502 });
+});
+
+test('distinguishes prepaid, project, and organization quota errors without advising retries', () => {
+  for (const [code, expected] of [
+    ['credit_balance_exhausted', /預付餘額已用完/],
+    ['project_spend_limit_exceeded', /專案支出上限/],
+    ['organization_spend_limit_exceeded', /組織支出上限/],
+    ['organization_usage_limit_exceeded', /組織用量上限/]
+  ]) {
+    const result = openAIHoldingRateError({ code, type: 'insufficient_quota' }, '10');
+    assert.match(result.error, expected);
+    assert.equal(result.retryAfterSeconds, undefined);
+  }
+  assert.match(openAIHoldingRateError({ type: 'insufficient_quota' }, null).error, /API 額度不足/);
+});
+
+test('uses the upstream wait for temporary throttling and handles missing details', () => {
+  const now = Date.parse('Thu, 26 Nov 2026 00:00:00 GMT');
+  const slowDown = { code: 'slow_down', type: 'rate_limit_error' };
+  assert.equal(openAIHoldingRateError(slowDown, '2.1', now).retryAfterSeconds, 3);
+  assert.equal(openAIHoldingRateError(slowDown, 'Thu, 26 Nov 2026 00:00:45 GMT', now).retryAfterSeconds, 45);
+  assert.match(openAIHoldingRateError(slowDown, null, now).error, /短時間/);
+  assert.equal(openAIHoldingRateError(slowDown, 'bogus', now).retryAfterSeconds, undefined);
+  assert.match(openAIHoldingRateError(null, null, now).error, /未提供確切原因/);
 });

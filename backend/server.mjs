@@ -4,7 +4,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { topupApiResult } from '../frontend/portfolio-math.js';
-import { holdingVisionModels, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength } from './holding-vision.mjs';
+import { holdingVisionModels, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength, openAIHoldingRateError } from './holding-vision.mjs';
 
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
@@ -716,6 +716,10 @@ async function scanHoldingImage(req, res) {
     return send(res, 503, { error: `暫時無法連線到 ${label}，請稍後再試。` });
   }
   if (!response.ok) {
+    if (provider === 'openai' && response.status === 429) {
+      const result = await response.json().catch(() => null);
+      return send(res, 429, openAIHoldingRateError(result?.error, response.headers.get('retry-after')));
+    }
     if (response.status === 429) return send(res, 429, { error: `${label} 配額或請求頻率暫時達到上限。` });
     if (response.status >= 500) return send(res, 503, { error: `${label} 目前忙碌，請稍後再試。` });
     if ([401, 403, 404].includes(response.status)) return send(res, 502, { error: `${label} 無法驗證金鑰或使用指定模型，請聯絡網站管理者。` });

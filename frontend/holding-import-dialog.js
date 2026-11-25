@@ -82,19 +82,26 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
   const cloud = byId('Cloud'), provider = byId('Provider'), consent = byId('Consent'), consentText = byId('ConsentText');
   const scanButton = byId('Scan'), cloudHint = byId('CloudHint'), grid = byId('Grid');
   let imageUrl = '', imageReady = false, scan = null, cloudBusy = false, available = null, drafts = [];
+  let openAIRetryAt = 0, retryTimer;
 
   function setStatus(message) {
     status.textContent = message;
     status.hidden = !message;
   }
   function refreshScanControls() {
+    clearTimeout(retryTimer);
     const service = provider.value;
     const ready = Boolean(available?.[service]);
+    const waitSeconds = service === 'openai' ? Math.max(0, Math.ceil((openAIRetryAt - Date.now()) / 1000)) : 0;
     cloud.hidden = !imageReady;
     provider.disabled = cloudBusy || !Object.values(available || {}).some(Boolean);
     consent.disabled = cloudBusy || !ready;
-    scanButton.disabled = !imageReady || !ready || !consent.checked || cloudBusy;
+    scanButton.disabled = !imageReady || !ready || !consent.checked || cloudBusy || waitSeconds > 0;
     scanButton.textContent = ready ? `用 ${providerLabels[service]} 掃描整張圖` : '掃描整張圖';
+    if (dialog.open && imageReady && waitSeconds > 0) {
+      scanButton.textContent = `OpenAI ${waitSeconds} 秒後可重試`;
+      retryTimer = setTimeout(refreshScanControls, 1000);
+    }
     const recipient = ready ? (service === 'gemini' ? 'Google Gemini' : 'OpenAI') : '所選服務';
     consentText.textContent = `我同意將這張圖片傳給 ${recipient}。若有帳號或姓名，請先遮蔽。`;
     cloudHint.hidden = available?.openai === true;
@@ -295,6 +302,9 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     } catch (error) {
       if (!controller.signal.aborted) {
         if (!drafts.length) showCandidates([]);
+        if (service === 'openai' && Number.isSafeInteger(error.retryAfterSeconds) && error.retryAfterSeconds > 0 && error.retryAfterSeconds <= 86400) {
+          openAIRetryAt = Date.now() + error.retryAfterSeconds * 1000;
+        }
         setStatus(error.message || '整圖辨識暫時無法使用，仍可使用目前的預覽。');
       }
     } finally {
