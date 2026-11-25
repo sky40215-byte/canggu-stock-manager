@@ -1,4 +1,4 @@
-const CACHE_NAME = 'canggu-app-shell-v15';
+const CACHE_NAME = 'canggu-app-shell-v16';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -9,7 +9,7 @@ const APP_SHELL = [
   '/portfolio-stress.js?v=20261125d',
   '/quick-search.js?v=20261125d',
   '/demo.html',
-  '/demo.js?v=20261125d',
+  '/demo.js?v=20261125e',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

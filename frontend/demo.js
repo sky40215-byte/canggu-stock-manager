@@ -101,5 +101,8 @@ const demoStress = mountPortfolioStress($('demoStress'), {
   }
 });
 renderDemoMarket();
+$('demoMarket').disabled = false;
+$('demoStress').hidden = false;
+$('demoLoading').hidden = true;
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

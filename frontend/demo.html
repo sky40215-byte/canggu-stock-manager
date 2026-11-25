@@ -15,10 +15,11 @@
       <a class="secondary-button" href="/">返回端股</a>
     </header>
     <p class="demo-notice" id="demoNotice">使用虛構持股與固定示範價格。筆記只保留在此示範頁，重新整理會清除。</p>
+    <p id="demoLoading" role="status">正在載入示範資料…</p>
     <section class="demo-panel" aria-labelledby="demoHoldingsTitle">
       <div class="demo-section-top">
         <div><h2 id="demoHoldingsTitle">投資總覽</h2><p>切換市場後，摘要與持倉會一同更新。</p></div>
-        <label class="demo-market-picker">市場<select id="demoMarket"><option value="tw">台灣</option><option value="us">美國</option></select></label>
+        <label class="demo-market-picker">市場<select id="demoMarket" disabled><option value="tw">台灣</option><option value="us">美國</option></select></label>
       </div>
       <div class="demo-metrics" id="demoMetrics"></div>
       <div class="demo-holdings" id="demoHoldings"></div>
@@ -35,7 +36,7 @@
     <section class="demo-panel" id="demoJournal" aria-labelledby="demoJournalTitle" hidden>
       <h2 id="demoJournalTitle">示範日誌</h2><div id="demoJournalEntries"></div>
     </section>
-    <details class="demo-panel" id="demoStress">
+    <details class="demo-panel" id="demoStress" hidden>
       <summary><strong>進一步體驗整組持倉壓力測試</strong></summary>
       <div class="risk-parameters" data-stress-parameters>
         <label>市場與幣別<select data-stress-scope></select></label>
@@ -47,6 +48,6 @@
       <button type="button" class="secondary-button" data-stress-save disabled>存入示範日誌</button>
     </details>
   </main>
-  <script type="module" src="/demo.js?v=20261125d"></script>
+  <script type="module" src="/demo.js?v=20261125e"></script>
 </body>
 </html>
