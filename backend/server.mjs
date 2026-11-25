@@ -4,6 +4,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { topupApiResult } from '../frontend/portfolio-math.js';
+import { holdingVisionModel, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength } from './holding-vision.mjs';
 
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
@@ -586,6 +587,13 @@ function fugleAssistantAnswer(marketContext) {
   lines.push('解讀方式：這是依上方標示來源的報價及 Fugle 歷史日 K 數值整理的固定摘要，並非 AI 對話；報價可能延遲，也不構成個人化買賣建議。');
   return lines.join('\n');
 }
+function postGemini(model, body, timeout = 30000) {
+  return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: 'POST', signal: AbortSignal.timeout(timeout),
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+    body
+  });
+}
 async function askGemini(messages, topic, marketContext = '', outputFormat = 'text') {
   const requestBody = JSON.stringify({
     systemInstruction: { parts: [{ text: assistantSystemPrompt(topic, marketContext) }] },
@@ -597,11 +605,7 @@ async function askGemini(messages, topic, marketContext = '', outputFormat = 'te
   // reporting the upstream status so transient capacity spikes do not fail immediately.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent', {
-        method: 'POST', signal: AbortSignal.timeout(30000),
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-        body: requestBody
-      });
+      response = await postGemini('gemini-3.8-flash', requestBody);
     } catch (error) {
       throw Object.assign(new Error('目前無法連線到 Gemini。請稍後再試；也可以切換到 Ollama。'), { status: 503, cause: error });
     }
@@ -681,6 +685,31 @@ function aiProviderConfigured(provider) {
   }
   if (provider === 'gemini') return Boolean(GEMINI_API_KEY);
   return false;
+}
+async function scanHoldingImage(req, res) {
+  let user;
+  if (process.env.NODE_ENV === 'production' || SUPABASE_URL) {
+    user = await requireAuthenticatedUser(req, res);
+    if (!user) return;
+  }
+  if (!aiProviderConfigured('gemini')) return send(res, 503, { error: 'Gemini 整圖辨識尚未設定。' });
+  const body = await readJsonBody(req, maxHoldingImageLength + 1024);
+  if (body?.aiConsent !== true) return send(res, 400, { error: '請先同意將圖片送至 Google Gemini。' });
+  if (!isHoldingJpeg(body.image)) return send(res, 400, { error: '圖片資料有誤或過大，請重新選擇。' });
+  const identity = user?.id || req.socket.remoteAddress || 'local';
+  if (!checkAssistantRateLimit(`holding-image:${identity}`)) return send(res, 429, { error: '整圖辨識每小時最多 20 次，請稍後再試。' });
+  let response;
+  try {
+    response = await postGemini(holdingVisionModel, holdingVisionRequest(body.image), 60000);
+  } catch {
+    return send(res, 503, { error: '暫時無法連線到 Gemini，請稍後再試。' });
+  }
+  if (!response.ok) {
+    if (response.status === 429) return send(res, 429, { error: 'Gemini 配額或請求頻率暫時達到上限。' });
+    if (response.status >= 500) return send(res, 503, { error: 'Gemini 目前忙碌，請稍後再試。' });
+    return send(res, 502, { error: 'Gemini 暫時無法辨識這張圖，請檢查服務設定或稍後重試。' });
+  }
+  return send(res, 200, { model: holdingVisionModel, rows: holdingVisionRows(await response.json()) });
 }
 async function askAssistant(messages, topic, marketContext = '', provider = AI_PROVIDER, outputFormat = 'text') {
   const startedAt = Date.now();
@@ -822,6 +851,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/markets/quote') {
       if (!await authorizeMarketRequest(req, res)) return;
       return send(res, 200, await internationalStockQuote(url.searchParams.get('market'), url.searchParams.get('symbol'), url.searchParams.get('exchange'), url.searchParams.get('micCode'), url.searchParams.get('history') !== '0'));
+    }
+    if (url.pathname === '/api/holdings/image') {
+      if (req.method === 'GET') return send(res, 200, { configured: aiProviderConfigured('gemini'), model: holdingVisionModel });
+      if (req.method === 'POST') return await scanHoldingImage(req, res);
+      return send(res, 405, { error: '不支援此操作。' });
     }
     if (url.pathname === '/api/assistant/status') return send(res, 200, {
       configured: aiProviderConfigured(AI_PROVIDER),

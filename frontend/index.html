@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261125f">
+  <link rel="stylesheet" href="styles.css?v=20261125g">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
@@ -133,21 +133,26 @@
   <dialog id="holdingImportDialog" class="modal holding-import-modal" aria-labelledby="holdingImportTitle">
     <form id="holdingImportForm" method="dialog" novalidate>
       <div class="modal-heading">
-        <div><h2 id="holdingImportTitle">從截圖匯入持股</h2><p>選擇含欄位標題的台股券商庫存截圖。請核對股數和每股平均成本，再匯入「我的持股」。</p></div>
+        <div><h2 id="holdingImportTitle">從截圖匯入持股</h2><p>選擇台股券商的庫存截圖或照片。核對股數與每股平均成本後，即可匯入「我的持股」。</p></div>
         <button type="button" class="close-button" data-close="holdingImportDialog" aria-label="關閉截圖匯入">×</button>
       </div>
       <div class="holding-import-upload">
         <input id="holdingImportFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
         <button class="secondary-button" id="holdingImportChoose" type="button" autofocus>選擇截圖</button>
-        <small id="holdingImportFileName">PNG、JPG 或 WebP，上限 12 MB。影像在此裝置辨識。</small>
+        <small id="holdingImportFileName">PNG、JPG 或 WebP，上限 12 MB。預設在此裝置進行文字辨識。</small>
       </div>
+      <section id="holdingImportCloud" class="holding-import-cloud" aria-labelledby="holdingImportCloudTitle" hidden>
+        <div><h3 id="holdingImportCloudTitle">Gemini 3.8 Flash 整圖辨識</h3><p>卡片、表格或沒有欄位標題的截圖都可掃描。辨識成功會更新下方預覽。</p></div>
+        <label><input id="holdingImportConsent" type="checkbox"> 我同意將這張整圖傳送給 Google Gemini。若有帳號或姓名，請先遮蔽。</label>
+        <button id="holdingImportGemini" class="secondary-button" type="button" disabled>用 Gemini 掃描整張圖</button>
+      </section>
       <p class="holding-import-status" id="holdingImportStatus" role="status" hidden></p>
       <div class="holding-import-review" id="holdingImportReview" hidden>
         <figure>
           <figcaption>原始截圖 <button id="holdingImportZoom" class="text-button" type="button" aria-pressed="false">放大截圖</button></figcaption>
           <div class="holding-import-picture"><img id="holdingImportImage" alt="待核對的持股截圖"></div>
         </figure>
-        <div class="holding-import-grid">
+        <div class="holding-import-grid" id="holdingImportGrid">
           <div class="holding-import-table">
             <table aria-label="核對匯入持股">
               <thead><tr><th scope="col">代號</th><th scope="col">名稱</th><th scope="col">股數</th><th scope="col">均價／股</th><th scope="col">備用價</th><th scope="col">處理方式</th></tr></thead>
@@ -173,6 +178,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261125f"></script>
+  <script type="module" src="app.js?v=20261125g"></script>
 </body>
 </html>

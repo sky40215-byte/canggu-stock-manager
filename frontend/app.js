@@ -2,7 +2,7 @@ import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.j
 import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
-import { mountHoldingImport } from './holding-import-dialog.js?v=20261125f';
+import { mountHoldingImport } from './holding-import-dialog.js?v=20261125g';
 
 (() => {
   'use strict';
@@ -852,6 +852,19 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261125f';
     getHoldings: () => state.holdings,
     getQuotes: () => quoteMap,
     escape: esc,
+    requestGemini: async (image, signal) => {
+      const { data, error } = await supabaseClient?.auth.getSession() || {};
+      const token = data?.session?.access_token;
+      if (supabaseClient && (error || !token)) throw new Error('請重新登入後再使用整圖辨識。');
+      const response = await fetch('/api/holdings/image', {
+        method: 'POST', signal,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ aiConsent: true, image })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !Array.isArray(result.rows)) throw new Error(result.error || 'Gemini 暫時無法辨識圖片，請稍後再試。');
+      return result.rows;
+    },
     saveHoldings: (rows) => {
       if ($('appShell').hidden || (supabaseClient && !cloudReady)) return false;
       const replacements = new Map(), additions = [];

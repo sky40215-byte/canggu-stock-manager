@@ -2,6 +2,7 @@ import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTab
 
 const allowedImages = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const maxFileBytes = 12 * 1024 * 1024;
+const maxCloudImageLength = 4 * Math.ceil((4 * 1024 * 1024) / 3);
 const fields = [
   { key: 'code', label: '代號', attributes: 'inputmode="numeric" maxlength="6" autocomplete="off"' },
   { key: 'name', label: '名稱', attributes: 'maxlength="60" autocomplete="off"' },
@@ -21,6 +22,15 @@ function normalizedImage(image) {
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return canvas;
+}
+
+function jpegForGemini(image) {
+  const canvas = normalizedImage(image);
+  for (const quality of [.95, .85, .75]) {
+    const encoded = canvas.toDataURL('image/jpeg', quality).slice('data:image/jpeg;base64,'.length);
+    if (encoded && encoded.length <= maxCloudImageLength) return encoded;
+  }
+  throw new Error('圖片過大，請縮小圖片後再試。');
 }
 
 async function scanImage(canvas, signal, report) {
@@ -63,21 +73,31 @@ async function scanImage(canvas, signal, report) {
   }
 }
 
-export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escape }) {
+export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, requestGemini, escape }) {
   const byId = (id) => document.getElementById('holdingImport' + id);
   const dialog = byId('Dialog'), form = byId('Form'), file = byId('File'), review = byId('Review');
   const image = byId('Image'), zoom = byId('Zoom'), body = byId('Rows'), status = byId('Status');
   const submit = byId('Submit'), count = byId('Count'), addRow = byId('AddRow');
-  let imageUrl = '', scan = null, drafts = [];
+  const cloud = byId('Cloud'), consent = byId('Consent'), gemini = byId('Gemini'), grid = byId('Grid');
+  let imageUrl = '', imageReady = false, scan = null, cloudBusy = false, geminiConfigured = false, drafts = [];
 
   function setStatus(message) {
     status.textContent = message;
     status.hidden = !message;
   }
+  function refreshScanControls() {
+    cloud.hidden = !imageReady || !geminiConfigured;
+    consent.disabled = cloudBusy;
+    gemini.disabled = !imageReady || !geminiConfigured || !consent.checked || cloudBusy;
+    grid.inert = cloudBusy;
+  }
 
   function reset() {
     scan?.abort();
     scan = null;
+    cloudBusy = false;
+    imageReady = false;
+    consent.checked = false;
     if (imageUrl) URL.revokeObjectURL(imageUrl);
     imageUrl = '';
     image.removeAttribute('src');
@@ -89,9 +109,10 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escap
     review.hidden = true;
     submit.disabled = true;
     count.textContent = '';
-    byId('FileName').textContent = 'PNG、JPG 或 WebP，上限 12 MB。影像在此裝置辨識。';
+    byId('FileName').textContent = 'PNG、JPG 或 WebP，上限 12 MB。預設在此裝置進行文字辨識。';
     byId('Choose').textContent = '選擇截圖';
     setStatus('');
+    refreshScanControls();
   }
 
   function renderRows() {
@@ -136,7 +157,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escap
     const selected = current.map((row, index) => ({ ...row, action: drafts[index].action })).filter((row) => row.action !== 'skip');
     const incomplete = selected.filter((row) => row.issues.length).length;
     count.textContent = !drafts.length ? '' : `待匯入 ${selected.length} 筆${incomplete ? `，其中 ${incomplete} 筆待修正` : ''}`;
-    submit.disabled = !selected.length || Boolean(incomplete);
+    submit.disabled = cloudBusy || !selected.length || Boolean(incomplete);
     return selected;
   }
 
@@ -144,9 +165,20 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escap
     drafts.push({ code: '', name: '', shares: '', cost: '', price: '', ...row });
   }
 
+  function showCandidates(rows) {
+    drafts = [];
+    matchHoldingNames(rows, getQuotes()).forEach((row) => addDraft(row));
+    if (!drafts.length) addDraft();
+    review.hidden = false;
+    renderRows();
+  }
+
   document.getElementById('openHoldingImport').addEventListener('click', () => {
     reset();
     dialog.showModal();
+    fetch('/api/holdings/image', { cache: 'no-store' }).then(async (response) => {
+      geminiConfigured = response.ok && (await response.json()).configured === true;
+    }).catch(() => { geminiConfigured = false; }).finally(refreshScanControls);
   });
   dialog.addEventListener('close', () => { if (!dialog.open) reset(); });
   byId('Choose').addEventListener('click', () => file.click());
@@ -167,11 +199,11 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escap
     const selected = file.files?.[0];
     file.value = '';
     if (!selected) return;
+    reset();
     if (!allowedImages.has(selected.type) || selected.size > maxFileBytes) {
       setStatus('請選擇 12 MB 以內的 PNG、JPG 或 WebP 截圖。');
       return;
     }
-    reset();
     const controller = new AbortController();
     scan = controller;
     imageUrl = URL.createObjectURL(selected);
@@ -185,30 +217,66 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escap
       if (controller.signal.aborted) return;
       decoded = true;
       const canvas = normalizedImage(image);
+      imageReady = true;
+      refreshScanControls();
       const tsv = await scanImage(canvas, controller.signal, (progress) => {
         setStatus(`正在辨識持股欄位… ${Math.round(progress * 100)}%`);
       });
       if (controller.signal.aborted) return;
-      const found = matchHoldingNames(readHoldingTable(tsv), getQuotes());
-      found.forEach((row) => addDraft(row));
-      if (!found.length) addDraft();
-      review.hidden = false;
-      renderRows();
+      const found = readHoldingTable(tsv);
+      showCandidates(found);
       setStatus(found.length
-        ? `找到 ${found.length} 筆候選持股。請對照原圖核對代號、股數與均價。${found.length === maxImageHoldings ? ' 單張截圖最多處理 50 筆。' : ''}`
-        : '未辨識到持股表格。請試用含欄位標題的清楚截圖，或對照圖片手動填寫。');
+        ? `裝置辨識找到 ${found.length} 筆候選持股。請對照原圖核對代號、股數與均價。${found.length === maxImageHoldings ? ' 單張截圖最多處理 50 筆。' : ''}`
+        : '裝置辨識找不到持股欄位。可以改用整圖辨識，或對照圖片手動填寫。');
     } catch {
       if (controller.signal.aborted) return;
       if (decoded) {
-        addDraft();
-        review.hidden = false;
-        renderRows();
+        showCandidates([]);
       }
       setStatus(decoded
         ? '這張圖片暫時無法辨識。可縮小或裁切截圖後重試，也可對照原圖填寫。'
         : '無法開啟這張圖片，請重新截圖後再試。');
     } finally {
-      if (scan === controller) scan = null;
+      if (scan === controller) {
+        scan = null;
+        refreshScanControls();
+      }
+    }
+  });
+
+  consent.addEventListener('change', refreshScanControls);
+  gemini.addEventListener('click', async () => {
+    if (!dialog.open || gemini.disabled) return;
+    scan?.abort();
+    const controller = new AbortController();
+    scan = controller;
+    cloudBusy = true;
+    refreshScanControls();
+    refreshReview();
+    setStatus('Gemini 正在掃描整張圖並找出持股…');
+    try {
+      const rows = await requestGemini(jpegForGemini(image), controller.signal);
+      if (!dialog.open || controller.signal.aborted) return;
+      if (rows.length) {
+        showCandidates(rows);
+        setStatus(`Gemini 找到 ${rows.length} 筆候選持股。請核對原圖再匯入。${rows.length === maxImageHoldings ? ' 單張圖片最多回傳 50 筆。' : ''}`);
+      } else {
+        if (!drafts.length) showCandidates([]);
+        setStatus('Gemini 找不到可確認的台股持股。你可以保留目前預覽，或換張較清楚的圖片。');
+      }
+      consent.checked = false;
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        if (!drafts.length) showCandidates([]);
+        setStatus(error.message || '整圖辨識暫時無法使用，仍可使用目前的預覽。');
+      }
+    } finally {
+      if (scan === controller) {
+        scan = null;
+        cloudBusy = false;
+        refreshScanControls();
+        refreshReview();
+      }
     }
   });
 
@@ -226,7 +294,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, escap
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (!dialog.open || review.hidden) return;
+    if (!dialog.open || review.hidden || cloudBusy) return;
     const selected = refreshReview();
     if (!selected.length || selected.some((row) => row.issues.length)) return;
     if (saveHoldings(selected)) dialog.close();
