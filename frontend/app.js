@@ -1,13 +1,14 @@
-import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.js?v=20261125c';
-import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125c';
+import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.js?v=20261125d';
+import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
+import { mountQuickSearch } from './quick-search.js?v=20261125d';
+import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
 
 (() => {
   'use strict';
   const STORAGE_KEY = 'canggu.v1.portfolio';
   const $ = (id) => document.getElementById(id);
   const initialState = { holdings: [], observations: [], transactions: [], alerts: [], journal: [], watchlist: [], watchlistGroups: {}, events: [], settings: { eyeComfort: false, topupReviewReminders: [] } };
-  const hadLocalState = localStorage.getItem(STORAGE_KEY) !== null;
-  let state = loadState();
+  let state = structuredClone(initialState);
   let quoteMap = new Map();
   let internationalQuoteMap = new Map();
   const overviewQuoteJobs = new Map();
@@ -19,27 +20,27 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   let screenCandidateResults = null;
   let toastTimer;
   let supabaseClient = null, cloudUser = null, cloudReady = false, cloudSyncEnabled = false, cloudSyncTimer = null, lastCloudUpdatedAt = '';
-  let servicesStarted = false, accountMode = 'login';
+  let servicesStarted = false, accountMode = 'login', cloudRevision = 0, cloudDirty = false, cloudWrite = null;
+  const accountStorageKey = (id) => STORAGE_KEY + '.account.' + id;
 
   function loadState() {
     try {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (!parsed || !Array.isArray(parsed.holdings) || !Array.isArray(parsed.observations)) return structuredClone(initialState);
-      return { ...initialState, ...parsed, transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [], alerts: Array.isArray(parsed.alerts) ? parsed.alerts : [], journal: Array.isArray(parsed.journal) ? parsed.journal : [], watchlist: Array.isArray(parsed.watchlist) ? parsed.watchlist : [], watchlistGroups: parsed.watchlistGroups && typeof parsed.watchlistGroups === 'object' && !Array.isArray(parsed.watchlistGroups) ? parsed.watchlistGroups : {}, events: Array.isArray(parsed.events) ? parsed.events : [], settings: parsed.settings && typeof parsed.settings === 'object' ? { ...initialState.settings, ...parsed.settings, topupReviewReminders: Array.isArray(parsed.settings.topupReviewReminders) ? parsed.settings.topupReviewReminders : [] } : { ...initialState.settings } };
+      return normalizePortfolio(parsed);
     } catch { return structuredClone(initialState); }
   }
   function persist() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-    catch { showToast('瀏覽器儲存空間不足，請先匯出備份。'); }
+    if (cloudReady && cloudUser) { cloudRevision += 1; cloudDirty = true; }
+    persistLocalOnly();
     if (cloudSyncEnabled && cloudReady) queueCloudSave();
   }
   function persistLocalOnly() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+    try {
+      if (cloudUser) localStorage.setItem(accountStorageKey(cloudUser.id), JSON.stringify({ data: state, updatedAt: lastCloudUpdatedAt, dirty: cloudDirty }));
+      else if (!supabaseClient) localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
     catch { showToast('瀏覽器儲存空間不足，請先匯出備份。'); }
-  }
-  function hasPortfolioContent(value) {
-    return ['holdings','observations','transactions','alerts','journal','watchlist','events'].some((key) => Array.isArray(value?.[key]) && value[key].length > 0)
-      || ['topupReviewReminders', 'screenPresets'].some((key) => Array.isArray(value?.settings?.[key]) && value.settings[key].length > 0);
   }
   function stableSerialize(value) {
     if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
@@ -52,6 +53,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   }
   function showAccountGate(message = '') {
     $('accountGate').hidden = false; $('appShell').hidden = true; $('logoutBtn').hidden = true;
+    document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
     if (message) $('accountStatus').textContent = message;
   }
   function showSyncedApp() {
@@ -62,7 +64,6 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   function startAppServices() {
     if (servicesStarted) return;
     servicesStarted = true; checkFugleStatus(); renderCandidates(); refreshQuotes(); checkTopupReviewReminders(); renderTopupReviewReminders();
-    if (state.holdings.length) refreshNews();
   }
   async function initAccountSync() {
     let config;
@@ -75,6 +76,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     }
     if (!config.configured) {
       if (config.production) { showAccountGate('網站雲端登入尚未設定完成，請聯絡管理者。'); return; }
+      state = loadState(); render();
       $('accountGate').hidden = true; $('appShell').hidden = false; $('syncBadge').innerHTML = '<i></i>僅儲存於此裝置';
       startAppServices(); return;
     }
@@ -99,55 +101,93 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       finally { button.disabled = false; }
     });
     $('logoutBtn').addEventListener('click', async () => {
-      if (supabaseClient) { await supabaseClient.auth.signOut(); showAccountGate('已登出。再次登入即可繼續同步。'); }
+      if (cloudDirty) await saveCloudData();
+      const { error } = await supabaseClient.auth.signOut();
+      if (error) showToast('登出失敗，請稍後再試。');
     });
     supabaseClient.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || !session) { cloudSyncEnabled = false; cloudReady = false; cloudUser = null; showAccountGate('請登入以讀取你的雲端資料。'); }
-      else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') queueMicrotask(() => activateCloudUser(session));
+      if (event === 'SIGNED_OUT' || !session) {
+        const wasSignedIn = Boolean(cloudUser || activatingUserId);
+        cloudSyncEnabled = false; cloudReady = false; cloudUser = null; activatingUserId = '';
+        clearTimeout(cloudSyncTimer); cloudSyncTimer = null;
+        showAccountGate('請登入以讀取你的雲端資料。');
+        if (wasSignedIn) location.reload();
+      }
+      else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') setTimeout(() => activateCloudUser(session), 0);
     });
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) { showAccountGate(`無法讀取登入狀態：${error.message}`); return; }
     if (data.session) await activateCloudUser(data.session);
-    else showAccountGate('請登入或建立帳號；第一次登入會將此裝置的資料同步到雲端。');
+    else showAccountGate('請登入或建立帳號。登入後會載入該帳號的持倉。');
   }
   let activatingUserId = '';
   async function activateCloudUser(session) {
     if (!session?.user || activatingUserId === session.user.id || (cloudReady && cloudUser?.id === session.user.id)) return;
-    activatingUserId = session.user.id; cloudUser = session.user; showAccountGate('正在安全載入你的雲端資料…');
+    if (cloudUser && cloudUser.id !== session.user.id) { showAccountGate(); location.reload(); return; }
+    const user = session.user;
+    activatingUserId = user.id; cloudUser = user; showAccountGate('正在載入此帳號的持倉…');
     try {
-      const { data: row, error } = await supabaseClient.from('portfolio_data').select('data,updated_at').eq('user_id', cloudUser.id).maybeSingle();
+      const { data: row, error } = await supabaseClient.from('portfolio_data').select('data,updated_at').eq('user_id', user.id).maybeSingle();
+      if (cloudUser?.id !== user.id) return;
       if (error) throw error;
-      let shouldUpload = !row;
-      if (row?.data) {
-        const localState = normalizePortfolio(state), cloudState = normalizePortfolio(row.data), localHasData = hadLocalState && hasPortfolioContent(localState);
-        if (localHasData && stableSerialize(state) !== stableSerialize(cloudState)) {
-          const useDevice = confirm('此裝置和雲端都有資料。按「確定」會用此裝置資料覆寫雲端；按「取消」會載入雲端資料並覆蓋此裝置。');
-          if (useDevice) { state = localState; shouldUpload = true; } else state = cloudState;
-        } else state = cloudState;
-        lastCloudUpdatedAt = row.updated_at || '';
-        persistLocalOnly(); render();
+      let local;
+      try { local = JSON.parse(localStorage.getItem(accountStorageKey(user.id)) || 'null'); } catch { /* A damaged browser cache may be ignored. */ }
+      const remote = normalizePortfolio(row?.data);
+      const localData = local?.data ? normalizePortfolio(local.data) : null;
+      lastCloudUpdatedAt = row?.updated_at || '';
+      const hasPendingChanges = localData && local.dirty === true && stableSerialize(localData) !== stableSerialize(remote);
+      let useLocal = Boolean(hasPendingChanges);
+      if (useLocal && row && local.updatedAt !== lastCloudUpdatedAt) {
+        useLocal = confirm('這個帳號的本機與雲端都有較新的編輯。按「確定」同步本機版本，按「取消」載入雲端版本。');
       }
-      cloudReady = true;
-      if (shouldUpload && !await saveCloudData()) throw new Error('無法儲存到雲端，請確認資料庫存取政策。');
-      cloudReady = true; cloudSyncEnabled = true; activatingUserId = ''; showSyncedApp(); startAppServices();
+      state = useLocal ? localData : remote;
+      cloudRevision = 0; cloudDirty = useLocal;
+      cloudReady = true; cloudSyncEnabled = true; activatingUserId = '';
+      persistLocalOnly(); render(); showSyncedApp(); startAppServices();
+      if (cloudDirty) queueCloudSave();
     } catch (error) {
+      if (cloudUser?.id !== user.id) return;
       activatingUserId = ''; cloudReady = false; cloudSyncEnabled = false;
       showAccountGate(`雲端資料庫尚未設定完成：${error.message}。請先完成資料表與存取政策設定。`);
     }
   }
-  function queueCloudSave() {
-    clearTimeout(cloudSyncTimer); cloudSyncTimer = setTimeout(async () => { cloudSyncTimer = null; if (!await saveCloudData()) setTimeout(queueCloudSave, 5000); }, 700);
+  function queueCloudSave(delay = 700) {
+    clearTimeout(cloudSyncTimer);
+    const userId = cloudUser?.id;
+    cloudSyncTimer = setTimeout(async () => {
+      cloudSyncTimer = null;
+      if (!userId || cloudUser?.id !== userId || !cloudDirty) return;
+      const saved = await saveCloudData();
+      if (cloudUser?.id === userId && cloudDirty) queueCloudSave(saved ? 700 : 5000);
+    }, delay);
   }
   async function saveCloudData() {
-    if (!supabaseClient || !cloudUser || !cloudReady) return true;
-    const { data, error } = await supabaseClient.from('portfolio_data').upsert({ user_id: cloudUser.id, data: state }, { onConflict: 'user_id' }).select('updated_at').single();
-    if (error) { $('syncBadge').innerHTML = '<i></i>同步失敗'; $('accountStatus').textContent = `雲端同步失敗：${error.message}。本機資料仍保留。`; return false; }
-    lastCloudUpdatedAt = data.updated_at || new Date().toISOString(); $('syncBadge').innerHTML = '<i></i>雲端同步已開啟'; $('syncBadge').title = `最近同步：${new Date(lastCloudUpdatedAt).toLocaleString('zh-TW')}`;
-    return true;
+    if (!supabaseClient || !cloudUser || !cloudReady || !cloudDirty) return true;
+    if (cloudWrite) return cloudWrite;
+    const id = cloudUser.id, revision = cloudRevision, snapshot = structuredClone(state);
+    cloudWrite = (async () => {
+      try {
+        const { data, error } = await supabaseClient.from('portfolio_data').upsert({ user_id: id, data: snapshot }, { onConflict: 'user_id' }).select('updated_at').single();
+        if (cloudUser?.id !== id) return true;
+        if (error) throw error;
+        lastCloudUpdatedAt = data.updated_at || new Date().toISOString();
+        cloudDirty = cloudRevision !== revision;
+        persistLocalOnly();
+        $('syncBadge').innerHTML = cloudDirty ? '<i></i>正在同步' : '<i></i>雲端同步已開啟';
+        $('syncBadge').title = '最近同步 ' + new Date(lastCloudUpdatedAt).toLocaleString('zh-TW');
+        return true;
+      } catch {
+        if (cloudUser?.id === id) $('syncBadge').innerHTML = '<i></i>暫未同步，已存此裝置';
+        return false;
+      }
+    })().finally(() => { cloudWrite = null; });
+    return cloudWrite;
   }
   async function pullCloudData() {
-    if (!cloudSyncEnabled || !cloudReady || !cloudUser || cloudSyncTimer || document.querySelector('dialog[open]')) return;
-    const { data, error } = await supabaseClient.from('portfolio_data').select('data,updated_at').eq('user_id', cloudUser.id).maybeSingle();
+    if (!cloudSyncEnabled || !cloudReady || !cloudUser || cloudDirty || cloudWrite || document.querySelector('dialog[open]')) return;
+    const id = cloudUser.id, revision = cloudRevision;
+    const { data, error } = await supabaseClient.from('portfolio_data').select('data,updated_at').eq('user_id', id).maybeSingle();
+    if (cloudUser?.id !== id || revision !== cloudRevision || cloudDirty || document.querySelector('dialog[open]')) return;
     if (error) { $('syncBadge').innerHTML = '<i></i>同步檢查失敗'; return; }
     if (data?.data && data.updated_at > lastCloudUpdatedAt) { state = normalizePortfolio(data.data); lastCloudUpdatedAt = data.updated_at; persistLocalOnly(); render(); }
   }
@@ -182,6 +222,12 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   const marketRefMoney = (value) => money(marketTickPrice(value));
   const pct = (value) => `${num(value) > 0 ? '+' : ''}${num(value).toFixed(2)}%`;
   const esc = (value) => String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  function webLink(value) {
+    try {
+      const url = new URL(value);
+      return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+    } catch { return ''; }
+  }
   const stockCode = (name) => String(name).match(/\b\d{4,6}\b/)?.[0] || '';
   const livePrice = (item) => holdingQuote(item)?.price ?? num(item.price);
   const holdingScenarioButton = (item, compact = false) => `<button type="button" class="secondary-button holding-scenario-button" data-simulate-holding="${esc(item.id)}" aria-label="試算 ${esc(item.name)} 持倉">${compact ? '試算' : '試算這筆持倉'}</button>`;
@@ -191,9 +237,10 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     const holdings = state.holdings;
     const taiwanHoldings = holdings.filter((item) => holdingMarket(item) === 'tw');
     const realized = state.transactions.filter((row) => row.type === 'sell').reduce((sum, row) => sum + num(row.realizedPnl), 0);
-    const dividends = state.transactions.filter((row) => row.type === 'dividend').reduce((sum, row) => sum + num(row.shares) * num(row.price), 0);
+    const dividends = state.transactions.filter((row) => row.type === 'dividend').reduce((sum, row) => sum + netDividend(row), 0);
     $('realizedPnl').textContent = money(realized); $('realizedPnl').className = `metric ${realized < 0 ? 'negative' : realized > 0 ? 'positive' : ''}`; $('dividendTotal').textContent = money(dividends);
     renderOverviewHoldings();
+    stressLab.refresh();
     renderTopupHoldingOptions();
     renderScreenPresets();
     $('holdingCount').textContent = String(holdings.length);
@@ -281,7 +328,10 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     badge.textContent = label;
     badge.title = title || label;
   }
-  function quoteChangePct(quote) { const price = num(quote.price), change = Number(quote.change); return price - change > 0 && Number.isFinite(change) ? change / (price - change) * 100 : null; }
+  function quoteChangePct(quote) {
+    const price = num(quote.price), change = Number(quote.change);
+    return quote.change != null && price - change > 0 && Number.isFinite(change) ? change / (price - change) * 100 : null;
+  }
   function renderStockQuote(quote) {
     const code = String(quote.code), change = Number(quote.change), changePct = quoteChangePct(quote), watched = state.watchlist.includes(code);
     const newsUrl = `https://news.google.com/search?q=${encodeURIComponent(`"${code}" "${quote.name}"`)}&hl=zh-TW&gl=TW`;
@@ -299,6 +349,11 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const rows = [...data.revenue].reverse().map((row) => `<tr><td>${esc(row.month)}</td><td>${row.amount == null ? '—' : `${(row.amount / 100000000).toFixed(2)} 億`}</td><td class="${row.yearOverYear == null ? '' : row.yearOverYear < 0 ? 'negative' : 'positive'}">${row.yearOverYear == null ? '—' : `${row.yearOverYear > 0 ? '+' : ''}${row.yearOverYear.toFixed(2)}%`}</td></tr>`).join('');
       panel.innerHTML = `<div class="fundamentals-heading"><b>免費台股基本面</b><small>估值日期：${esc(valuation?.date || '暫無資料')}</small></div><div class="fundamentals-metrics">${metric('本益比', valuation?.per, ' 倍')}${metric('殖利率', valuation?.dividendYield, '%')}${metric('股價淨值比', valuation?.pbr, ' 倍')}</div><div class="fundamentals-revenue"><b>近 12 個月營收</b><div class="fundamentals-table-wrap"><table><thead><tr><th>月份</th><th>營收</th><th>年增率</th></tr></thead><tbody>${rows || '<tr><td colspan="3">暫無營收資料</td></tr>'}</tbody></table></div></div><small class="fundamentals-source">資料來源：FinMind · ${esc(data.updatedAt.slice(0, 10))} 更新；估值為資料來源最近提供日期。</small>`;
       button.textContent = '更新基本面';
+      if (data.warnings?.length) {
+        const note = document.createElement('p');
+        note.className = 'source-warning'; note.textContent = data.warnings.join(' ');
+        panel.prepend(note);
+      }
     } catch (error) {
       panel.innerHTML = `<span class="feature-empty">${esc(error.message)}</span>`; button.textContent = '重試基本面';
     } finally { button.disabled = false; }
@@ -307,6 +362,16 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     $('watchlistCount').textContent = `${state.watchlist.length} 檔`;
     if (!state.watchlist.length) { $('stockWatchlist').innerHTML = '<div class="stock-watch-empty">還沒有待觀察股票。查詢個股後按「加入自選」。</div>'; return; }
     const selectedGroup = $('watchlistGroupFilter').value || 'all', visibleCodes = state.watchlist.filter((code) => selectedGroup === 'all' || (state.watchlistGroups[code] || '觀察中') === selectedGroup);
+    const order = $('watchlistSort').value;
+    if (order === 'code') visibleCodes.sort((a, b) => String(a).localeCompare(String(b), 'zh-TW', { numeric: true }));
+    if (order === 'gain' || order === 'loss') {
+      const quoteMove = (code) => { const quote = quoteMap.get(String(code)); return quote ? quoteChangePct(quote) : null; };
+      visibleCodes.sort((a, b) => {
+        const first = quoteMove(a), second = quoteMove(b);
+        if (first == null || second == null) return Number(first == null) - Number(second == null);
+        return order === 'gain' ? second - first : first - second;
+      });
+    }
     if (!visibleCodes.length) { $('stockWatchlist').innerHTML = '<div class="stock-watch-empty">這個分組目前沒有股票。</div>'; return; }
     $('stockWatchlist').innerHTML = visibleCodes.map((code) => {
       const quote = quoteMap.get(String(code)), change = quote ? Number(quote.change) : NaN, changePct = quote ? quoteChangePct(quote) : null;
@@ -467,7 +532,8 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const weight = marketValue ? value / marketValue * 100 : 0;
       const cost = num(item.cost) * num(item.shares), rate = cost ? ((value - cost) / cost) * 100 : 0;
       if (weight >= 40) cards.push(`<article class="insight-item"><span class="insight-mark warn">!</span><div><b>${esc(item.name)}：部位集中度偏高</b><p>約占目前持倉市值 ${weight.toFixed(1)}%。可檢視分散程度、資金用途與可承受波動。</p>${holdingScenarioButton(item)}</div></article>`);
-      if (quote?.change !== null && quote?.change !== undefined && Math.abs(num(quote.change)) >= 5) cards.push(`<article class="insight-item"><span class="insight-mark warn">↕</span><div><b>${esc(item.name)}：最近交易日波動較大</b><p>官方行情顯示漲跌 ${num(quote.change) > 0 ? '+' : ''}${num(quote.change).toFixed(2)} 元。建議核對公告、新聞與事件日期。</p></div></article>`);
+      const dailyMove = quote ? quoteChangePct(quote) : null;
+      if (dailyMove != null && Math.abs(dailyMove) >= 5) cards.push(`<article class="insight-item"><span class="insight-mark warn">↕</span><div><b>${esc(item.name)}：最近交易日波動較大</b><p>官方行情顯示漲跌 ${pct(dailyMove)}。可核對公告、新聞與事件日期。</p></div></article>`);
       if (rate <= -10) cards.push(`<article class="insight-item"><span class="insight-mark down">↓</span><div><b>${esc(item.name)}：重新檢查原始投資假設</b><p>目前未實現損益約 ${pct(rate)}。回顧持有期限、資金需求與原先研究紀錄；成本價本身不代表合理價值。</p></div></article>`);
       else if (rate >= 20) cards.push(`<article class="insight-item"><span class="insight-mark up">↑</span><div><b>${esc(item.name)}：檢視獲利後的配置</b><p>目前未實現損益約 ${pct(rate)}。可檢視部位是否超出原定配置，並把費用與稅務納入考量。</p></div></article>`);
     });
@@ -511,7 +577,8 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const matched = taiwanHoldings.filter((item) => quoteMap.has(stockCode(item.name))).length;
       const dataDate = data.quotes.map((row) => row.date).filter(Boolean).sort().at(-1) || '最近交易日';
       $('quoteStatus').textContent = `${taiwanHoldings.length ? `${matched}/${taiwanHoldings.length} 檔台股持股比對成功 · ` : `全市場 ${data.quotes.length.toLocaleString('zh-TW')} 檔 · `}${dataDate} 最近交易日收盤 · 來源 ${data.source || 'TWSE／TPEx OpenAPI'} · 查詢於 ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`;
-      setQuoteFreshness('fresh', `官方收盤 ${dataDate}`, `來源：${data.source || 'TWSE／TPEx OpenAPI'}；最近查詢：${new Date(lastQuoteFetchAt).toLocaleString('zh-TW')}`);
+      const badgeText = data.stale ? '沿用收盤資料 ' + dataDate : data.warnings?.length ? '部分市場有更新 ' + dataDate : '官方收盤 ' + dataDate;
+      setQuoteFreshness(data.warnings?.length ? 'error' : 'fresh', badgeText, data.warnings?.join(' · ') || '最近查詢 ' + new Date(lastQuoteFetchAt).toLocaleString('zh-TW'));
       if (data.warnings?.length) $('quoteStatus').textContent += ` · ${data.warnings.join('、')}`;
       if (taiwanHoldings.length && !matched) showToast('行情已連線，但台股持股名稱中需要有 4–6 碼股票代號才能配對。');
     } catch (error) { const detail = error.message.includes('Failed to fetch') ? '無法連到資料服務，請確認服務已啟動。' : error.message; const previousDate = [...quoteMap.values()].map((row) => row.date).filter(Boolean).sort().at(-1); $('quoteStatus').textContent = previousDate ? `更新失敗，暫沿用 ${previousDate} 的舊資料 · ${detail}` : `行情更新失敗 · ${detail}`; setQuoteFreshness('error', previousDate ? `更新失敗 · 沿用 ${previousDate}` : '行情更新失敗', detail); $('candidateContent').innerHTML = `<div class="news-empty">公開行情暫時無法取得：${esc(error.message)}</div>`; showToast('行情更新失敗；總覽已標出目前資料日期。'); }
@@ -644,17 +711,20 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   function renderNews(items, message) {
     if (message) { $('newsContent').innerHTML = `<div class="news-empty">${esc(message)}</div>`; return; }
     if (!items?.length) { $('newsContent').innerHTML = '<div class="news-empty">目前沒有找到相關新聞。你仍可前往公開資訊觀測站查看公司公告。</div>'; return; }
-    $('newsContent').innerHTML = items.map((item) => `<article class="news-item"><span class="news-date">${esc(item.publishedAt || '最新')}</span><div class="news-main"><a class="news-story-link" href="${esc(item.link)}" target="_blank" rel="noopener noreferrer"><b>${esc(item.title)}</b></a><small>${esc(item.source || 'Google News RSS')}</small><div class="news-actions">${item.sourceUrl ? `<a href="${esc(item.sourceUrl)}" target="_blank" rel="noopener noreferrer">來源網站 ↗</a>` : ''}<a href="${esc(item.searchLink || `https://news.google.com/search?q=${encodeURIComponent(`\"${item.title}\"`)}&hl=zh-TW&gl=TW`)}" target="_blank" rel="noopener noreferrer">Google News 備用連結 ↗</a></div></div></article>`).join('');
+    $('newsContent').innerHTML = items.map((item) => `<article class="news-item"><span class="news-date">${esc(item.publishedAt || '最新')}</span><div class="news-main"><a class="news-story-link" href="${esc(webLink(item.link) || webLink(item.searchLink) || 'https://news.google.com/')}" target="_blank" rel="noopener noreferrer"><b>${esc(item.title)}</b></a><small>${esc(item.source || 'Google News RSS')}</small><div class="news-actions">${webLink(item.sourceUrl) ? `<a href="${esc(webLink(item.sourceUrl))}" target="_blank" rel="noopener noreferrer">來源網站 ↗</a>` : ''}<a href="${esc(webLink(item.searchLink) || `https://news.google.com/search?q=${encodeURIComponent(`\"${item.title}\"`)}&hl=zh-TW&gl=TW`)}" target="_blank" rel="noopener noreferrer">Google News 備用連結 ↗</a></div></div></article>`).join('');
   }
   async function refreshNews() {
     const selected = $('newsStockFilter').value;
-    const chosen = selected === 'all' ? state.holdings : state.holdings.filter((item) => item.id === selected);
+    const matching = selected === 'all' ? state.holdings : state.holdings.filter((item) => item.id === selected);
+    const chosen = matching.slice(-12);
     const keyword = $('newsKeyword').value.trim();
     if (!chosen.length && !keyword) { $('newsFreshness').dataset.state = 'pending'; $('newsFreshness').textContent = '等待查詢條件'; return renderNews([], '請先新增持股，或輸入關鍵字搜尋新聞。'); }
     const button = $('refreshNews'); button.disabled = true; button.textContent = '載入中…';
     $('newsFreshness').dataset.state = 'loading'; $('newsFreshness').textContent = '查詢中…';
     try {
-      const stocks = chosen.map((item) => ({ name: item.name.replace(/\b\d{4,6}\b/g, '').trim(), code: stockCode(item.name) }));
+      const stocks = chosen.map((item) => holdingMarket(item) === 'tw'
+        ? { name: item.name.replace(/\b\d{4,6}\b/g, '').trim(), code: stockCode(item.name) }
+        : { name: item.name, code: '' });
       const terms = stocks.flatMap((item) => [item.name.slice(0, 32), item.code].filter(Boolean));
       const query = [terms.length ? `(${terms.map((term) => `"${term}"`).join(' OR ')})` : '', keyword].filter(Boolean).join(' ');
       const params = new URLSearchParams({ stocks: JSON.stringify(stocks), keyword });
@@ -663,18 +733,28 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const searchUrl = `https://news.google.com/search?q=${encodeURIComponent(query)}&hl=zh-TW&gl=TW`;
       $('newsSourceLinks').innerHTML = `<a class="mops-chip" href="${esc(searchUrl)}" target="_blank" rel="noopener noreferrer">在 Google News 開啟完整搜尋結果 ↗</a>`;
       renderNews(data.items);
-      const queriedAt = new Date(); $('newsFreshness').dataset.state = 'fresh'; $('newsFreshness').textContent = `查詢於 ${queriedAt.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`; $('newsFreshness').title = `最近成功查詢：${queriedAt.toLocaleString('zh-TW')}`;
+      const queriedAt = new Date(); $('newsFreshness').dataset.state = 'fresh'; $('newsFreshness').textContent = `查詢於 ${queriedAt.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}${matching.length > chosen.length ? ' · 查詢最近新增的 12 筆持股' : ''}`; $('newsFreshness').title = `最近成功查詢：${queriedAt.toLocaleString('zh-TW')}`;
     } catch (error) { $('newsFreshness').dataset.state = 'error'; $('newsFreshness').textContent = '查詢失敗'; $('newsFreshness').title = error.message; $('newsSourceLinks').innerHTML = ''; renderNews([], error.message || '新聞來源暫時無法連線，請稍後重試。'); }
     finally { button.disabled = false; button.textContent = '⌕ 搜尋新聞'; }
   }
   $('globalDemoFill').addEventListener('click', () => {
     $('globalCompany').value = 'NVIDIA'; $('globalTicker').value = 'NVDA'; $('globalTaiwanCodes').value = '2330、2317'; $('globalRelation').value = 'AI 加速器、先進製程、伺服器供應鏈';
-    $('globalResearchStatus').textContent = '已填入示範查詢條件。按「分析產業與個股」後會重新查詢即時公開資料；需勾選資料同意。';
+    $('globalResearchStatus').textContent = '已填入 NVIDIA 與觀察台股。送出後會查詢最新可得的公開資料。';
     $('globalCompany').focus();
   });
+  const updateGlobalResearchMode = () => {
+    const sourcesOnly = $('globalAiProvider').value === 'sources';
+    $('globalResearchConsent').closest('label').hidden = sourcesOnly;
+    $('globalResearchConsent').checked = false;
+    $('globalResearchSubmit').textContent = sourcesOnly ? '查詢公開資料' : '分析產業與個股';
+    $('globalResearchStatus').textContent = sourcesOnly ? '可先查看海外新聞、SEC 申報與指定台股的歷史事件回放。' : '勾選同意後，才會將公開資料傳給所選模型整理。';
+  };
+  $('globalAiProvider').addEventListener('change', updateGlobalResearchMode);
+  updateGlobalResearchMode();
   $('globalResearchForm').addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!$('globalResearchConsent').checked) { $('globalResearchStatus').textContent = '請先閱讀並勾選資料傳送同意。'; $('globalResearchConsent').focus(); return; }
+    const provider = $('globalAiProvider').value, consent = $('globalResearchConsent').checked;
+    if (provider !== 'sources' && !consent) { $('globalResearchStatus').textContent = '請先閱讀並勾選資料傳送同意。'; $('globalResearchConsent').focus(); return; }
     const button = $('globalResearchSubmit'); button.disabled = true; button.textContent = '查詢與整理中…'; $('globalResearchResult').hidden = true;
     $('globalResearchConsent').checked = false;
     $('globalResearchStatus').textContent = '正在搜尋海外新聞與申報資料，並比對上市櫃公司名單分析可能受影響的產業及個股。';
@@ -682,20 +762,23 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const { data: sessionData } = await supabaseClient?.auth.getSession() || {};
       const headers = { 'Content-Type': 'application/json' };
       if (sessionData?.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
-      const response = await fetch('/api/international-research', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ companyName: $('globalCompany').value.trim(), ticker: $('globalTicker').value.trim(), taiwanCodes: $('globalTaiwanCodes').value.trim(), relation: $('globalRelation').value.trim(), provider: $('globalAiProvider').value, aiConsent: true }) });
+      const response = await fetch('/api/international-research', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ companyName: $('globalCompany').value.trim(), ticker: $('globalTicker').value.trim(), taiwanCodes: $('globalTaiwanCodes').value.trim(), relation: $('globalRelation').value.trim(), provider, aiConsent: consent }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '國際事件查詢失敗，請稍後重試。');
       const research = data.research || {}, sec = research.sec || {};
-      const filings = (sec.filings || []).map((filing) => `<li><a href="${esc(filing.url)}" target="_blank" rel="noopener noreferrer">${esc(filing.form)} · 申報 ${esc(filing.date)}${filing.period ? ` · 期間 ${esc(filing.period)}` : ''}</a>${filing.description ? `<small>${esc(filing.description)}</small>` : ''}</li>`).join('');
+      const filings = (sec.filings || []).map((filing) => `<li><a href="${esc(webLink(filing.url) || 'https://www.sec.gov/edgar/search/')}" target="_blank" rel="noopener noreferrer">${esc(filing.form)} · 申報 ${esc(filing.date)}${filing.period ? ` · 期間 ${esc(filing.period)}` : ''}</a>${filing.description ? `<small>${esc(filing.description)}</small>` : ''}</li>`).join('');
       const financials = (sec.financials || []).map((metric) => `<span class="global-metric"><small>${esc(metric.label)} · ${esc(metric.end)} · ${esc(metric.form)}</small><b>${Number(metric.value).toLocaleString('zh-TW')} ${esc(metric.unit)}</b></span>`).join('');
-      const newsItems = (research.headlines || []).map((item) => `<li><a href="${esc(item.link)}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a><small>${esc(item.publishedAt || '')} · ${esc(item.source || 'Google News')}${item.description ? ` · ${esc(item.description)}` : ''}</small></li>`).join('');
+      const newsItems = (research.headlines || []).map((item) => `<li><a href="${esc(webLink(item.link) || webLink(item.searchLink) || 'https://news.google.com/')}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a><small>${esc(item.publishedAt || '')} · ${esc(item.source || 'Google News')}${item.description ? ` · ${esc(item.description)}` : ''}</small></li>`).join('');
       const analysis = data.impactAnalysis || {}, impactStocks = analysis.stocks || [], industries = analysis.industries || [];
+      const isSourceMode = data.provider === 'sources';
+      const modeLabel = isSourceMode ? '公開資料' : data.provider === 'ollama' ? 'Ollama' : 'Gemini';
+      const replayStocks = [...new Map([...impactStocks, ...(analysis.requestedStocks || [])].map((item) => [item.code, item])).values()];
       const researchSources = new Map([
         ...(research.headlines || []).map((item, index) => [`N${index + 1}`, { title: item.title, url: item.link, date: item.publishedAt }]),
         ...(sec.filings || []).map((item, index) => [`F${index + 1}`, { title: `${item.form} ${item.date || ''} ${item.description || ''}`.trim(), url: item.url, date: item.date }]),
         ...(sec.financials || []).map((item, index) => [`M${index + 1}`, { title: `${item.label} ${item.end || ''}`.trim(), date: item.end }])
       ]);
-      const showEvidence = (evidence) => Array.isArray(evidence) && evidence.length ? `<div class="global-evidence"><b>引用來源（可點擊核對）</b>${evidence.map((id) => { const source = researchSources.get(id); if (!source) return ''; const label = `<span>${esc(id)}</span> ${esc(source.title)}${source.date ? ` · ${esc(source.date)}` : ''}`; return source.url ? `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : `<div class="global-evidence-text">${label}</div>`; }).join('')}</div>` : '<small class="global-evidence-missing">尚無可核對來源</small>';
+      const showEvidence = (evidence) => Array.isArray(evidence) && evidence.length ? `<div class="global-evidence"><b>引用來源（可點擊核對）</b>${evidence.map((id) => { const source = researchSources.get(id); if (!source) return ''; const label = `<span>${esc(id)}</span> ${esc(source.title)}${source.date ? ` · ${esc(source.date)}` : ''}`; return webLink(source.url) ? `<a href="${esc(webLink(source.url))}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : `<div class="global-evidence-text">${label}</div>`; }).join('')}</div>` : '<small class="global-evidence-missing">尚無可核對來源</small>';
       const evidenceCoverage = (item) => {
         const summary = item.evidenceSummary || {};
         const count = Number(summary.count) || 0;
@@ -714,8 +797,8 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const risks = (analysis.risks || []).map((risk) => `<li>${esc(risk)}</li>`).join('');
       const invalidCodes = (research.unrecognizedCodes || []).length ? `<p class="global-source-note">以下代號未出現在目前上市櫃個股名單：${esc(research.unrecognizedCodes.join('、'))}</p>` : '';
       const replayNews = (research.headlines || []).filter((item) => item.publishedAt && item.link).slice(0, 10);
-      const replayPanel = impactStocks.length && replayNews.length ? `<section class="global-replay"><h3>歷史事件回放</h3><p>以新聞日期前一個收盤價為基準，比較事件後 5／20 個交易日的價格變化；這是歷史比較，不代表事件造成漲跌。</p><div class="global-replay-form"><label>事件新聞<select id="globalReplayNews">${replayNews.map((item, index) => `<option value="${index}">${esc(item.publishedAt)} · ${esc(item.title)}</option>`).join('')}</select></label><label>觀察台股<select id="globalReplayStock">${impactStocks.map((item) => `<option value="${esc(item.code)}">${esc(item.code)} ${esc(item.name)}</option>`).join('')}</select></label><button type="button" class="secondary-button" id="globalReplayRun">比較事件前後</button></div><div id="globalReplayResult" class="global-replay-result" aria-live="polite"></div></section>` : '';
-      $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${research.ticker}）` : ''} · 國際事件研究</b><p>${esc(analysis.summary || '目前沒有足夠公開資料可做產業與個股推論。')}</p><small>分析方式：${esc(data.provider === 'ollama' ? 'Ollama' : 'Gemini 3.8 Flash')} · 個股關聯為研究推論，並須引用下方來源</small></div>${replayPanel}<section><h3>可能受影響的產業 · ${industries.length} 項</h3><div class="global-impact-grid">${industryCards || '<p>目前沒有足夠資料判斷受影響產業。請確認新聞與申報來源是否有資料。</p>'}</div></section><section><h3>有來源支持的相關台股 · ${impactStocks.length} 檔</h3><div class="global-impact-grid">${impactStockCards || '<p>目前沒有足夠證據確認相關個股，不會把手動輸入的股票直接當成受影響標的。</p>'}</div>${invalidCodes}</section>${requestedStockCards ? `<section><h3>你指定檢視的股票（尚未確認與事件相關）</h3><div class="global-impact-grid">${requestedStockCards}</div></section>` : ''}${risks ? `<section><h3>仍需查證</h3><ul class="global-links">${risks}</ul></section>` : ''}<section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>Google News 目前沒有傳回相關文章。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股名單為證交所與櫃買中心；報價優先 Fugle，無法取得時回退至 TWSE／TPEx 最近收盤資料。</small>`;
+      const replayPanel = replayStocks.length && replayNews.length ? `<section class="global-replay"><h3>歷史事件回放</h3><p>以台灣時間的新聞日期為準，比較第 5／20 個交易日收盤價。若當天開盤，當天算第 1 個交易日。</p><div class="global-replay-form"><label>事件新聞<select id="globalReplayNews">${replayNews.map((item, index) => `<option value="${index}">${esc(item.publishedAt)} · ${esc(item.title)}</option>`).join('')}</select></label><label>觀察台股<select id="globalReplayStock">${replayStocks.map((item) => `<option value="${esc(item.code)}">${esc(item.code)} ${esc(item.name)}</option>`).join('')}</select></label><button type="button" class="secondary-button" id="globalReplayRun">比較事件前後</button></div><div id="globalReplayResult" class="global-replay-result" aria-live="polite"></div></section>` : '';
+      $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${esc(research.ticker)}）` : ''} · 國際事件研究</b><p>${esc(analysis.summary || '目前沒有足夠公開資料可做產業與個股推論。')}</p><small>整理方式：${modeLabel}${isSourceMode ? '' : ' · 個股關聯為研究推論'}</small></div>${replayPanel}${isSourceMode ? '' : `<section><h3>可能受影響的產業 · ${industries.length} 項</h3><div class="global-impact-grid">${industryCards || '<p>目前沒有足夠資料判斷受影響產業。請確認新聞與申報來源是否有資料。</p>'}</div></section><section><h3>有來源支持的相關台股 · ${impactStocks.length} 檔</h3><div class="global-impact-grid">${impactStockCards || '<p>目前沒有足夠證據確認相關個股，不會把手動輸入的股票直接當成受影響標的。</p>'}</div></section>`}${invalidCodes}${requestedStockCards ? `<section><h3>你指定檢視的股票（尚未確認與事件相關）</h3><div class="global-impact-grid">${requestedStockCards}</div></section>` : ''}${risks ? `<section><h3>仍需查證</h3><ul class="global-links">${risks}</ul></section>` : ''}<section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>Google News 目前沒有傳回相關文章。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股名單為證交所與櫃買中心；報價優先 Fugle，無法取得時回退至 TWSE／TPEx 最近收盤資料。</small>`;
       const confidenceNote = document.createElement('small');
       confidenceNote.className = 'global-source-note';
       confidenceNote.textContent = '模型信心是定性自評，不是機率；引用來源數量只表示模型引用了幾筆資料，不代表來源品質或因果證明。請點開來源自行核對。';
@@ -731,7 +814,8 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
           const { data: currentSession } = await supabaseClient?.auth.getSession() || {};
           const replayHeaders = { 'Content-Type': 'application/json' };
           if (currentSession?.session?.access_token) replayHeaders.Authorization = `Bearer ${currentSession.session.access_token}`;
-          const replayResponse = await fetch('/api/event-replay', { method: 'POST', headers: replayHeaders, cache: 'no-store', body: JSON.stringify({ code, name: $('globalReplayStock').selectedOptions[0]?.textContent || '', eventDate: replayDate.toISOString().slice(0, 10) }) });
+          const eventDate = replayDate.toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' });
+          const replayResponse = await fetch('/api/event-replay', { method: 'POST', headers: replayHeaders, cache: 'no-store', body: JSON.stringify({ code, name: $('globalReplayStock').selectedOptions[0]?.textContent || '', eventDate }) });
           const replayData = await replayResponse.json();
           if (!replayResponse.ok) throw new Error(replayData.error || '歷史回放暫時無法讀取。');
           const rows = replayData.comparisons || [];
@@ -739,9 +823,11 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
         } catch (error) { resultNode.textContent = error.message || '歷史回放讀取失敗。'; }
         finally { replayButton.disabled = false; replayButton.textContent = '比較事件前後'; }
       });
-      $('globalResearchResult').hidden = false; $('globalResearchStatus').textContent = research.headlines?.length || sec.available ? `已取得 ${research.headlines?.length || 0} 則新聞${sec.available ? '與 SEC 申報資料' : ''}，分析結果會標明來源；請核對原文與推論。` : '新聞與 SEC 來源目前沒有可用資料；畫面已標示資料不足，不會猜測相關產業或個股。'; void refreshAssistantMetrics();
+      $('globalResearchResult').hidden = false;
+      $('globalResearchStatus').textContent = data.warning || (research.headlines?.length || sec.available ? '已取得 ' + (research.headlines?.length || 0) + ' 則新聞' + (sec.available ? '與 SEC 申報資料。' : '。') : '目前未取得可用的公開來源。');
+      if (!isSourceMode) void refreshAssistantMetrics();
     } catch (error) { $('globalResearchStatus').textContent = error.message || '查詢失敗，請稍後再試。'; }
-    finally { button.disabled = false; button.textContent = '分析產業與個股'; }
+    finally { button.disabled = false; button.textContent = $('globalAiProvider').value === 'sources' ? '查詢公開資料' : '分析產業與個股'; }
   });
   function openHolding(item, prefill = null) {
     $('holdingForm').reset(); $('holdingId').value = item?.id || ''; $('holdingDialogTitle').textContent = item ? '編輯持股' : '新增持股';
@@ -813,11 +899,17 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   });
   $('stockWatchlist').addEventListener('click', (event) => {
     const remove = event.target.closest('[data-watch-remove]'), analyze = event.target.closest('[data-stock-analyze]');
-    if (remove) { state.watchlist = state.watchlist.filter((code) => code !== remove.dataset.watchRemove); delete state.watchlistGroups[remove.dataset.watchRemove]; persist(); renderStockWatchlist(); if ($('stockLookupInput').value.trim()) showStockLookup($('stockLookupInput').value); showToast('已從待觀察清單移除。'); }
+    if (remove) {
+      state.watchlist = state.watchlist.filter((code) => code !== remove.dataset.watchRemove);
+      delete state.watchlistGroups[remove.dataset.watchRemove]; persist(); renderStockWatchlist();
+      if ($('stockLookupMarket').value === 'tw' && $('stockLookupInput').value.trim()) showStockLookup($('stockLookupInput').value);
+      showToast('已從待觀察清單移除。');
+    }
     if (analyze) openStockAnalysis(analyze.dataset.stockAnalyze);
   });
   $('stockWatchlist').addEventListener('change', (event) => { const select = event.target.closest('[data-watch-group]'); if (!select) return; state.watchlistGroups[select.dataset.watchGroup] = select.value; persist(); renderStockWatchlist(); showToast(`已移至「${select.value}」分組。`); });
   $('watchlistGroupFilter').addEventListener('change', renderStockWatchlist);
+  $('watchlistSort').addEventListener('change', renderStockWatchlist);
   $('refreshQuotes').addEventListener('click', refreshQuotes);
   $('refreshCandidates').addEventListener('click', refreshQuotes);
   $('refreshNews').addEventListener('click', refreshNews);
@@ -836,7 +928,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     const index = state.holdings.findIndex((row) => row.id === id); if (index >= 0) state.holdings[index] = item; else state.holdings.push(item);
     if (item.market !== 'tw') $('overviewMarketFilter').value = item.market;
     persist(); render(); $('holdingDialog').close(); showToast('持股已儲存。');
-    if (item.market === 'tw') { refreshQuotes(); refreshNews(); }
+    if (item.market === 'tw') refreshQuotes();
     else refreshSelectedMarketHoldings();
   });
   $('priceForm').addEventListener('submit', (event) => {
@@ -864,8 +956,14 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   $('transactionForm').addEventListener('submit', (event) => {
     event.preventDefault(); const type = $('transactionType').value, stock = $('transactionStock').value.trim(), shares = num($('transactionShares').value), price = num($('transactionPrice').value), fees = num($('transactionFees').value), tax = num($('transactionTax').value);
     if (!stock || shares <= 0 || price < 0 || fees < 0 || tax < 0) return showToast('請檢查交易資料。');
-    const taiwanHoldings = state.holdings.filter((item) => holdingMarket(item) === 'tw');
+    const date = $('transactionDate').value;
+    if (!date || date > isoToday()) return showToast('交易日期不能晚於今天。');
     const code = stockCode(stock);
+    if (type !== 'dividend' && state.transactions.some((row) => row.type !== 'dividend' && row.date > date
+        && ((code && stockCode(row.stock) === code) || row.stock.toLowerCase() === stock.toLowerCase()))) {
+      return showToast('此股票已有較晚的成交紀錄。請按成交日期順序記錄，避免平均成本與已實現損益錯置。');
+    }
+    const taiwanHoldings = state.holdings.filter((item) => holdingMarket(item) === 'tw');
     if (state.holdings.some((item) => holdingMarket(item) !== 'tw' && [item.symbol, item.name].some((name) => name?.toLowerCase() === stock.toLowerCase())) &&
         !taiwanHoldings.some((item) => item.name.toLowerCase() === stock.toLowerCase())) {
       return showToast('交易與股利紀錄適用台股。海外持股可在「我的持股」編輯。');
@@ -884,7 +982,12 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     state.transactions.push({ id: crypto.randomUUID(), type, date: $('transactionDate').value, stock, shares, price, fees, tax, note: $('transactionNote').value.trim(), realizedPnl });
     persist(); render(); $('transactionDialog').close(); showToast(type === 'buy' ? '買進紀錄已儲存，持股成本已更新。' : type === 'sell' ? '賣出紀錄已儲存。' : '股利紀錄已儲存。');
   });
-  $('addAlert').addEventListener('click', () => { $('alertForm').reset(); if (state.holdings.length === 1) $('alertStock').value = state.holdings[0].name; $('alertDialog').showModal(); });
+  $('addAlert').addEventListener('click', () => {
+    $('alertForm').reset();
+    const holdings = state.holdings.filter((item) => holdingMarket(item) === 'tw');
+    if (holdings.length === 1) $('alertStock').value = holdings[0].name;
+    $('alertDialog').showModal();
+  });
   $('alertForm').addEventListener('submit', (event) => { event.preventDefault(); const stock = $('alertStock').value.trim(), target = num($('alertTarget').value); if (!stock || target <= 0) return showToast('請輸入股票和有效目標價。'); state.alerts.push({ id: crypto.randomUUID(), stock, direction: $('alertDirection').value, target, active: true, createdAt: isoToday() }); persist(); renderAlerts(); $('alertDialog').close(); showToast('價格提醒已儲存於此裝置。'); });
   $('alertsContent').addEventListener('click', (event) => { const button = event.target.closest('[data-delete-alert]'); if (button) { state.alerts = state.alerts.filter((row) => row.id !== button.dataset.deleteAlert); persist(); renderAlerts(); } });
   $('addEvent').addEventListener('click', () => { $('eventForm').reset(); $('eventDate').value = isoToday(); if (state.holdings.length === 1) $('eventStock').value = state.holdings[0].name; $('eventDialog').showModal(); });
@@ -896,7 +999,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   $('journalContent').addEventListener('click', (event) => { const done = event.target.closest('[data-complete-journal]'), remove = event.target.closest('[data-delete-journal]'); if (done) { const row = state.journal.find((item) => item.id === done.dataset.completeJournal); if (row) row.done = !row.done; persist(); renderJournal(); } if (remove) { state.journal = state.journal.filter((item) => item.id !== remove.dataset.deleteJournal); persist(); renderJournal(); } });
   $('backupForm').addEventListener('submit', async (event) => { event.preventDefault(); const password = $('backupPassword').value; if (password !== $('backupPasswordConfirm').value) return showToast('兩次輸入的密碼不一致。'); try { const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)), key = await backupKey(password, salt); const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify({ ...state, exportedAt: new Date().toISOString(), schema: 2 }))); const file = { format: 'canggu-encrypted-backup', version: 1, algorithm: 'AES-GCM', kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: 310000 }, salt: toBase64(salt), iv: toBase64(iv), data: toBase64(new Uint8Array(data)) }; downloadJson(file, `端股加密備份-${isoToday()}.json`); $('backupDialog').close(); $('backupForm').reset(); showToast('加密備份已下載；請妥善保存密碼與檔案。'); } catch { showToast('加密失敗，請使用本機網頁重新操作。'); } });
   $('importPasswordForm').addEventListener('submit', async (event) => { event.preventDefault(); try { const file = pendingEncryptedBackup, key = await backupKey($('importPassword').value, fromBase64(file.salt)); const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromBase64(file.iv) }, key, fromBase64(file.data)); const data = JSON.parse(new TextDecoder().decode(plain)); if (applyBackup(data)) { $('importPasswordDialog').close(); $('importPasswordForm').reset(); pendingEncryptedBackup = null; } } catch { showToast('密碼錯誤或備份檔已損毀，請再試一次。'); } });
-  let fugleConfigured = false, trendData = null, heldStockData = null;
+  let fugleConfigured = false, trendData = null, heldStockData = null, heldStockRequest = 0;
   async function fugleFetch(url) {
     const { data, error } = await supabaseClient?.auth.getSession() || {};
     if (error || !data?.session?.access_token) throw new Error('請先登入後再使用 Fugle 行情資料。');
@@ -927,6 +1030,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   function formatAssistantText(value) {
     const currencyMarker = '\uE000';
     return String(value || '')
+      .replace(/\b(NT|US|HK|CA|AU|SG|NZ)\$/gi, '$1' + currencyMarker)
       .replace(/\\text\{([^{}]*)\}/g, '$1')
       .replace(/\\mathrm\{([^{}]*)\}/g, '$1')
       .replace(/\\times\b/g, ' × ')
@@ -992,15 +1096,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       ollamaAssistantOption.textContent = assistantProviderAvailability.ollama ? `Ollama（${$('assistantBadge').dataset.ollamaModel}）` : 'Ollama（尚未設定）';
       $('globalAiProvider').querySelector('option[value="ollama"]').disabled = !assistantProviderAvailability.ollama;
       $('globalAiProvider').querySelector('option[value="gemini"]').disabled = !assistantProviderAvailability.gemini;
-      if (!assistantProviderAvailability[$('globalAiProvider').value]) $('globalAiProvider').value = assistantProviderAvailability.gemini ? 'gemini' : 'ollama';
-      const updateGlobalResearchStatus = () => {
-        const provider = $('globalAiProvider').value;
-        $('globalResearchStatus').textContent = provider === 'gemini'
-          ? assistantProviderAvailability.gemini ? 'Gemini 3.8 Flash 已設定。輸入海外公司名稱即可分析可能受影響的台灣產業與個股；台股代號可以留白。' : 'Gemini 尚未設定 GEMINI_API_KEY，請到 Render 的端股 Web Service → Environment 設定金鑰，再重新部署。'
-          : assistantProviderAvailability.ollama ? 'Ollama 已設定。輸入海外公司名稱即可分析可能受影響的產業與個股；本機模型會使用成交較活躍的上市櫃公司名單。' : 'Ollama 尚未設定或目前無法使用，請選擇已設定的 Gemini。';
-      };
-      $('globalAiProvider').addEventListener('change', updateGlobalResearchStatus);
-      updateGlobalResearchStatus();
+      if ($('globalAiProvider').selectedOptions[0]?.disabled) { $('globalAiProvider').value = 'sources'; updateGlobalResearchMode(); }
       const ollamaTopupOption = $('topupMode').querySelector('option[value="ollama"]');
       ollamaTopupOption.disabled = !assistantProviderAvailability.ollama;
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
@@ -1056,7 +1152,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     const holdingMode = $('topupMode').querySelector('[value="holding"]');
     holdingMode.hidden = !item;
     $('topupMode').querySelector('[value="fugle"]').disabled = Boolean(item && holdingMarket(item) !== 'tw');
-    $('topupMode').querySelector('[value="ollama"]').disabled = Boolean(item && holdingMarket(item) !== 'tw');
+    $('topupMode').querySelector('[value="ollama"]').disabled = !assistantProviderAvailability.ollama || Boolean(item && holdingMarket(item) !== 'tw');
     $('topupSymbol').value = item ? item.symbol || stockCode(item.name) || item.name : '';
     $('topupAverageCost').value = item?.cost ?? '';
     $('topupCurrentShares').value = item?.shares ?? '';
@@ -1302,21 +1398,25 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     finally { $('loadTrend').disabled = false; }
   });
   async function loadHeldStock() {
+    const request = ++heldStockRequest;
     const holding = state.holdings.find((item) => item.id === $('heldStockSelect').value), code = holding ? stockCode(holding.name) : '';
+    const button = $('loadHeldStock');
+    button.disabled = false; button.textContent = '載入個股資料';
     if (!holding) { $('heldStockStatus').textContent = '目前沒有持股可分析，請先到「我的持股」新增股票。'; $('heldStockResult').hidden = true; return; }
     if (!code) { $('heldStockStatus').textContent = '無法從持股名稱辨識股票代號。請在持股名稱中包含 4–6 碼代號，例如「2330 台積電」。'; $('heldStockResult').hidden = true; return; }
-    const button = $('loadHeldStock'); button.disabled = true; button.textContent = '載入中…'; $('heldStockStatus').textContent = '正在讀取所選股票的歷史日 K…'; $('heldStockResult').hidden = true;
+    button.disabled = true; button.textContent = '載入中…'; $('heldStockStatus').textContent = '正在讀取所選股票的歷史日 K…'; $('heldStockResult').hidden = true;
     try {
       const days = $('heldStockRange').value;
       const response = await fugleFetch(`/api/fugle/trend?symbol=${encodeURIComponent(code)}&days=${encodeURIComponent(days)}`), data = await response.json();
+      if (request !== heldStockRequest) return;
       if (!response.ok) throw new Error(data.error || '個股資料讀取失敗');
       if (!data.configured) throw new Error('尚未設定 Fugle API 金鑰。請先於本機設定金鑰並重新啟動程式。');
       if (!data.candles?.length) throw new Error('此股票目前沒有可用的歷史日 K。');
       heldStockData = { ...data, holdingId: holding.id };
       $('heldStockStatus').textContent = `${holding.name}（${code}） · ${data.market || '台股'} · ${data.candles.length} 個交易日 · ${data.candles.at(-1).date} 收盤資料 · Fugle 歷史日 K`;
-      $('heldStockResult').hidden = false; requestAnimationFrame(() => renderHeldStock(data, holding));
-    } catch (error) { $('heldStockStatus').textContent = error.message; }
-    finally { button.disabled = false; button.textContent = '載入個股資料'; }
+      $('heldStockResult').hidden = false; requestAnimationFrame(() => { if (request === heldStockRequest) renderHeldStock(data, holding); });
+    } catch (error) { if (request === heldStockRequest) $('heldStockStatus').textContent = error.message; }
+    finally { if (request === heldStockRequest) { button.disabled = false; button.textContent = '載入個股資料'; } }
   }
   $('loadHeldStock').addEventListener('click', loadHeldStock);
   $('heldStockSelect').addEventListener('change', loadHeldStock);
@@ -1361,7 +1461,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   function renderTrendAnalysis(data) {
     const candles = data.candles, last = candles.at(-1), previous = candles.at(-2), change = previous?.close ? (last.close - previous.close) / previous.close * 100 : 0;
     const signal = last.sma20 !== null && last.sma60 !== null && last.close > last.sma20 && last.sma20 > last.sma60 ? '中短期均線偏多' : last.sma20 !== null && last.sma60 !== null && last.close < last.sma20 && last.sma20 < last.sma60 ? '中短期均線偏弱' : '均線交錯，方向未明';
-    const notes = [signal, last.rsi14 >= 70 ? 'RSI（相對強弱指標）偏高' : last.rsi14 <= 30 ? 'RSI（相對強弱指標）偏低' : 'RSI（相對強弱指標）位於中間區間', last.macdHistogram == null ? 'MACD（指數平滑異同移動平均線）資料累積中' : last.macdHistogram >= 0 ? 'MACD（指數平滑異同移動平均線）動能為正' : 'MACD（指數平滑異同移動平均線）動能為負'];
+    const notes = [signal, last.rsi14 == null ? 'RSI（相對強弱指標）資料累積中' : last.rsi14 >= 70 ? 'RSI（相對強弱指標）偏高' : last.rsi14 <= 30 ? 'RSI（相對強弱指標）偏低' : 'RSI（相對強弱指標）位於中間區間', last.macdHistogram == null ? 'MACD（指數平滑異同移動平均線）資料累積中' : last.macdHistogram >= 0 ? 'MACD（指數平滑異同移動平均線）動能為正' : 'MACD（指數平滑異同移動平均線）動能為負'];
     $('trendSignal').innerHTML = `<b>${esc(signal)}</b><span>${notes.slice(1).map(esc).join(' · ')}</span><small>最新資料 ${esc(last.date)} · 收盤 ${money(last.close)}（${pct(change)}）</small>`;
     renderTradePlan(candles);
     const metrics = [['收盤價', money(last.close)], ['SMA 20（20日簡單移動平均線）', last.sma20 == null ? '資料累積中' : money(last.sma20)], ['SMA 60（60日簡單移動平均線）', last.sma60 == null ? '資料累積中' : money(last.sma60)], ['RSI 14（相對強弱指標）', last.rsi14 == null ? '資料累積中' : last.rsi14.toFixed(1)], ['MACD（指數平滑異同移動平均線）柱狀值', last.macdHistogram == null ? '資料累積中' : last.macdHistogram.toFixed(3)]];
@@ -1426,7 +1526,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢／自選', candidates: '推薦股號', watchlist: '趨勢觀察', news: '市場動態', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究資料', workspace: '多功能工作區' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', riskLab: '持倉壓力測試', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢與自選', candidates: '候選股篩選', watchlist: '價格觀察紀錄', news: '新聞與公告', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究來源', workspace: '多功能工作區' };
   const workspaceGrid = $('workspacePanelGrid'), workspaceHome = new Map();
   const workspaceFeatureIds = Object.keys(pageTitles).filter((id) => !['overview', 'workspace'].includes(id));
   workspaceFeatureIds.forEach((id) => { const element = $(id); if (element?.parentElement) workspaceHome.set(id, { parent: element.parentElement, next: element.nextElementSibling }); });
@@ -1434,30 +1534,46 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
   try { workspaceOpenPages = [...new Set(JSON.parse(localStorage.getItem('duanguWorkspacePages') || '[]').filter((id) => workspaceFeatureIds.includes(id)))]; } catch { workspaceOpenPages = []; }
   let workspacePositions = {}, workspaceZIndex = 1;
   try { workspacePositions = JSON.parse(localStorage.getItem('duanguWorkspacePositions') || '{}') || {}; } catch { workspacePositions = {}; }
+  const workspaceLayoutsKey = 'duanguWorkspaceLayouts';
+  const workspacePresets = [
+    { id: 'portfolio', name: '持倉檢查', pages: ['insights', 'riskLab', 'holdings'], positions: {} },
+    { id: 'research', name: '盤前研究', pages: ['stockDesk', 'trendAnalysis', 'news'], positions: {} }
+  ];
+  let customWorkspaceLayouts = [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(workspaceLayoutsKey) || '[]');
+    if (Array.isArray(stored)) customWorkspaceLayouts = stored.filter((row) => row?.id && row?.name && Array.isArray(row.pages)).slice(0, 8);
+  } catch { /* A malformed saved layout does not block the workbench. */ }
+  const persistWorkspacePositions = () => {
+    try { localStorage.setItem('duanguWorkspacePositions', JSON.stringify(workspacePositions)); } catch { /* The current layout is still usable. */ }
+  };
   const persistWorkspace = () => { try { localStorage.setItem('duanguWorkspacePages', JSON.stringify(workspaceOpenPages)); } catch { /* Workspace layout remains usable without browser storage. */ } };
   function saveWorkspacePosition(panel) {
     const width = workspaceGrid.clientWidth || 1;
     if (width < 700) return;
     workspacePositions[panel.dataset.page] = { x: panel.offsetLeft / width, y: panel.offsetTop, w: panel.offsetWidth / width };
-    try { localStorage.setItem('duanguWorkspacePositions', JSON.stringify(workspacePositions)); } catch { /* Position is still applied for this session. */ }
+    persistWorkspacePositions();
   }
   function updateWorkspaceCanvasHeight() {
     const bottom = [...workspaceGrid.querySelectorAll('.workspace-panel')].reduce((max, panel) => Math.max(max, panel.offsetTop + panel.offsetHeight), 0);
-    workspaceGrid.style.height = `${Math.max(bottom + 18, 0)}px`;
+    workspaceGrid.style.height = bottom ? (bottom + 18) + 'px' : '0px';
   }
   function enablePanelDragging(panel, heading, resizeHandle) {
     let operation = null;
     panel.addEventListener('pointerdown', () => { workspaceZIndex += 1; panel.style.zIndex = String(workspaceZIndex); });
     heading.addEventListener('pointerdown', (event) => {
-      if (event.target.closest('button')) return;
+      if (workspaceGrid.clientWidth < 700 || event.button !== 0 || event.target.closest('button')) return;
       event.preventDefault();
       operation = { type: 'move', pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: panel.offsetLeft, top: panel.offsetTop };
+      activeWorkspacePanel = panel;
       heading.classList.add('is-dragging');
       heading.setPointerCapture(event.pointerId);
     });
     resizeHandle.addEventListener('pointerdown', (event) => {
+      if (workspaceGrid.clientWidth < 700 || event.button !== 0) return;
       event.preventDefault(); event.stopPropagation();
       operation = { type: 'resize', pointerId: event.pointerId, startX: event.clientX, width: panel.offsetWidth };
+      activeWorkspacePanel = panel;
       resizeHandle.setPointerCapture(event.pointerId);
     });
     const move = (event) => {
@@ -1477,14 +1593,69 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     };
     const finish = (event) => {
       if (!operation || operation.pointerId !== event.pointerId) return;
-      operation = null; heading.classList.remove('is-dragging'); saveWorkspacePosition(panel); updateWorkspaceCanvasHeight();
+      operation = null; activeWorkspacePanel = null; heading.classList.remove('is-dragging'); saveWorkspacePosition(panel); scheduleWorkspaceLayout();
     };
     heading.addEventListener('pointermove', move); heading.addEventListener('pointerup', finish); heading.addEventListener('pointercancel', finish);
     resizeHandle.addEventListener('pointermove', move); resizeHandle.addEventListener('pointerup', finish); resizeHandle.addEventListener('pointercancel', finish);
+    resizeHandle.addEventListener('keydown', (event) => {
+      if (workspaceGrid.clientWidth < 700 || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      const available = workspaceGrid.clientWidth - panel.offsetLeft;
+      const width = Math.max(Math.min(available, 300), Math.min(available, panel.offsetWidth + (event.key === 'ArrowRight' ? 32 : -32)));
+      panel.style.width = width / workspaceGrid.clientWidth * 100 + '%';
+      saveWorkspacePosition(panel); updateWorkspaceCanvasHeight();
+    });
+  }
+  let workspaceFrame = 0, activeWorkspacePanel = null;
+  const chartWidths = new WeakMap();
+  const workspaceObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleWorkspaceLayout) : null;
+  function scheduleWorkspaceLayout() {
+    if (workspaceFrame || $('workspace').hidden) return;
+    workspaceFrame = requestAnimationFrame(() => {
+      workspaceFrame = 0;
+      if ($('workspace').hidden) return;
+      flowWorkspacePanels();
+    });
+  }
+  function flowWorkspacePanels() {
+    if (activeWorkspacePanel) return;
+    const width = workspaceGrid.clientWidth;
+    if (!width) return;
+    const narrow = width < 700, bottoms = [0, 0], automatic = [];
+    for (const panel of workspaceGrid.querySelectorAll('.workspace-panel')) {
+      panel.querySelector('.workspace-panel-resize').hidden = narrow;
+      const saved = workspacePositions[panel.dataset.page];
+      if (narrow || !saved || ![saved.x, saved.y, saved.w].every(Number.isFinite)) {
+        automatic.push(panel);
+        continue;
+      }
+      const span = Math.max(0.32, Math.min(1, saved.w));
+      const left = Math.max(0, Math.min(1 - span, saved.x));
+      panel.style.left = left * 100 + '%'; panel.style.width = span * 100 + '%'; panel.style.top = Math.max(0, saved.y) + 'px';
+      const bottom = panel.offsetTop + panel.offsetHeight + 14;
+      if (left < 0.5) bottoms[0] = Math.max(bottoms[0], bottom);
+      if (left + span > 0.5) bottoms[1] = Math.max(bottoms[1], bottom);
+    }
+    for (const panel of automatic) {
+      const col = narrow || bottoms[0] <= bottoms[1] ? 0 : 1;
+      panel.style.left = col ? '51%' : '0%'; panel.style.width = narrow ? '100%' : '49%'; panel.style.top = bottoms[col] + 'px';
+      bottoms[col] += panel.offsetHeight + 14;
+    }
+    for (const [id, data, redraw] of [['trendChart', trendData, drawTrendChart], ['heldStockChart', heldStockData, drawHoldingCandles]]) {
+      const canvas = $(id);
+      if (!data || !workspaceGrid.contains(canvas)) continue;
+      const chartWidth = canvas.clientWidth;
+      if (chartWidth && chartWidth !== chartWidths.get(canvas)) {
+        chartWidths.set(canvas, chartWidth); redraw(data.candles);
+      }
+    }
+    updateWorkspaceCanvasHeight();
   }
   function restoreWorkspacePanels() {
     [...workspaceGrid.querySelectorAll('.workspace-panel')].forEach((panel) => {
       const id = panel.dataset.page, element = $(id), home = workspaceHome.get(id);
+      if (panel === activeWorkspacePanel) activeWorkspacePanel = null;
+      workspaceObserver?.unobserve(panel);
       if (element && home) { home.parent.insertBefore(element, home.next?.parentElement === home.parent ? home.next : null); element.hidden = true; }
       panel.remove();
     });
@@ -1493,43 +1664,26 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     [...$('workspaceFeatureSelect').options].forEach((option) => { if (option.value) option.disabled = workspaceOpenPages.includes(option.value); });
     $('workspaceCount').textContent = workspaceOpenPages.length ? `已開啟 ${workspaceOpenPages.length} 項功能` : '尚未開啟功能';
     $('workspaceEmpty').hidden = workspaceOpenPages.length > 0;
+    $('saveWorkspaceLayout').disabled = !workspaceOpenPages.length;
   }
   function renderWorkspacePanels() {
     restoreWorkspacePanels();
-    const canvasWidth = workspaceGrid.clientWidth || 1, narrowCanvas = canvasWidth < 700;
-    const columnBottoms = [0, 0];
     workspaceOpenPages.forEach((id) => {
       const element = $(id), home = workspaceHome.get(id);
       if (!element || !home) return;
       const panel = document.createElement('article'); panel.className = 'workspace-panel'; panel.dataset.page = id;
       const heading = document.createElement('header'); heading.className = 'workspace-panel-heading';
-      const title = document.createElement('b'); title.textContent = '拖曳此列移動';
+      const title = document.createElement('b'); title.textContent = pageTitles[id];
       const close = document.createElement('button'); close.type = 'button'; close.className = 'workspace-panel-close'; close.setAttribute('aria-label', `關閉${pageTitles[id]}`); close.textContent = '×';
       close.addEventListener('click', () => { workspaceOpenPages = workspaceOpenPages.filter((item) => item !== id); persistWorkspace(); renderWorkspacePanels(); updateWorkspaceControls(); });
       heading.append(title, close);
       const resizeHandle = document.createElement('button'); resizeHandle.type = 'button'; resizeHandle.className = 'workspace-panel-resize'; resizeHandle.setAttribute('aria-label', `拖曳調整${pageTitles[id]}視窗大小`); resizeHandle.title = '拖曳調整大小'; resizeHandle.textContent = '◢';
-      const saved = workspacePositions[id];
-      if (!narrowCanvas && saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y)) && Number.isFinite(Number(saved.w))) {
-        const widthRatio = Math.max(narrowCanvas ? 0.97 : 0.32, Math.min(narrowCanvas ? 0.97 : 0.98, Number(saved.w)));
-        const xRatio = Math.max(0, Math.min(1 - widthRatio, Number(saved.x)));
-        panel.style.left = `${xRatio * 100}%`; panel.style.top = `${Math.max(0, Number(saved.y))}px`; panel.style.width = `${widthRatio * 100}%`;
-      } else {
-        const column = narrowCanvas ? 0 : columnBottoms[0] <= columnBottoms[1] ? 0 : 1;
-        const widthRatio = narrowCanvas ? 0.97 : 0.49;
-        panel.style.left = `${column ? 51 : 0}%`; panel.style.top = `${columnBottoms[column]}px`; panel.style.width = `${widthRatio * 100}%`;
-      }
       panel.append(heading, element, resizeHandle); workspaceGrid.append(panel); element.hidden = false;
       enablePanelDragging(panel, heading, resizeHandle);
-      const column = narrowCanvas || panel.offsetLeft < canvasWidth * 0.5 ? 0 : 1;
-      columnBottoms[column] = Math.max(columnBottoms[column], panel.offsetTop + panel.offsetHeight + 14);
+      workspaceObserver?.observe(panel);
     });
     updateWorkspaceControls();
-    requestAnimationFrame(() => {
-      if (trendData && workspaceOpenPages.includes('trendAnalysis')) drawTrendChart(trendData.candles);
-      if (heldStockData && workspaceOpenPages.includes('holdingAnalysis')) drawHoldingCandles(heldStockData.candles);
-      workspaceGrid.querySelectorAll('.workspace-panel').forEach(saveWorkspacePosition);
-      updateWorkspaceCanvasHeight();
-    });
+    scheduleWorkspaceLayout();
   }
   const workspaceSelect = $('workspaceFeatureSelect');
   workspaceFeatureIds.forEach((id) => { const option = document.createElement('option'); option.value = id; option.textContent = pageTitles[id]; workspaceSelect.append(option); });
@@ -1538,23 +1692,52 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     if (!id || workspaceOpenPages.includes(id)) return;
     workspaceOpenPages.push(id); persistWorkspace(); workspaceSelect.value = ''; renderWorkspacePanels();
   });
-  $('workspaceReset').addEventListener('click', () => { workspaceOpenPages = []; persistWorkspace(); renderWorkspacePanels(); });
-  window.addEventListener('resize', () => {
-    if ($('workspace').hidden) return;
-    const width = workspaceGrid.clientWidth || 1, narrow = width < 700;
-    let top = 0;
-    [...workspaceGrid.querySelectorAll('.workspace-panel')].forEach((panel) => {
-      const saved = workspacePositions[panel.dataset.page];
-      if (narrow) { panel.style.left = '0%'; panel.style.width = '97%'; panel.style.top = `${top}px`; top += panel.offsetHeight + 14; }
-      else if (saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.w))) {
-        const panelWidth = Math.max(0.32, Math.min(0.98, Number(saved.w))), left = Math.max(0, Math.min(1 - panelWidth, Number(saved.x)));
-        panel.style.left = `${left * 100}%`; panel.style.width = `${panelWidth * 100}%`; panel.style.top = `${Math.max(0, Number(saved.y) || 0)}px`;
-      }
-    });
-    updateWorkspaceCanvasHeight();
+  $('workspaceReset').addEventListener('click', () => {
+    workspaceOpenPages = []; workspacePositions = {}; persistWorkspace(); persistWorkspacePositions(); renderWorkspacePanels();
   });
+  window.addEventListener('resize', scheduleWorkspaceLayout);
+  const workspaceLayoutSelect = $('workspaceLayout');
+  const allWorkspaceLayouts = () => [...workspacePresets, ...customWorkspaceLayouts];
+  function refreshWorkspaceLayouts(selection = workspaceLayoutSelect.value) {
+    workspaceLayoutSelect.replaceChildren(new Option('選擇版型', ''), ...allWorkspaceLayouts().map((row) => new Option(row.name, row.id)));
+    workspaceLayoutSelect.value = allWorkspaceLayouts().some((row) => row.id === selection) ? selection : '';
+    $('applyWorkspaceLayout').disabled = !workspaceLayoutSelect.value;
+    $('deleteWorkspaceLayout').disabled = !customWorkspaceLayouts.some((row) => row.id === workspaceLayoutSelect.value);
+  }
+  function storeWorkspaceLayouts() {
+    try { localStorage.setItem(workspaceLayoutsKey, JSON.stringify(customWorkspaceLayouts)); return true; }
+    catch { showToast('瀏覽器儲存空間不足，此版型只保留在目前頁面。'); return false; }
+  }
+  workspaceLayoutSelect.addEventListener('change', () => refreshWorkspaceLayouts());
+  $('applyWorkspaceLayout').addEventListener('click', () => {
+    const layout = allWorkspaceLayouts().find((row) => row.id === workspaceLayoutSelect.value);
+    if (!layout) return;
+    workspaceOpenPages = [...new Set(layout.pages.filter((id) => workspaceFeatureIds.includes(id)))];
+    workspacePositions = layout.positions && typeof layout.positions === 'object' ? structuredClone(layout.positions) : {};
+    persistWorkspace(); persistWorkspacePositions(); renderWorkspacePanels(); showToast('已套用「' + layout.name + '」。');
+  });
+  $('saveWorkspaceLayout').addEventListener('click', () => {
+    if (!workspaceOpenPages.length) return;
+    const name = prompt('為這個工作區版型命名')?.trim().slice(0, 36);
+    if (!name) return;
+    const other = customWorkspaceLayouts.find((row) => row.name === name);
+    if (!other && customWorkspaceLayouts.length >= 8) return showToast('最多儲存 8 組自訂版型。');
+    const id = other?.id || crypto.randomUUID();
+    const positions = Object.fromEntries(workspaceOpenPages.filter((page) => workspacePositions[page]).map((page) => [page, { ...workspacePositions[page] }]));
+    customWorkspaceLayouts = [...customWorkspaceLayouts.filter((row) => row.id !== id), { id, name, pages: [...workspaceOpenPages], positions }];
+    const saved = storeWorkspaceLayouts();
+    refreshWorkspaceLayouts(id);
+    if (saved) showToast('已儲存版型至此裝置。');
+  });
+  $('deleteWorkspaceLayout').addEventListener('click', () => {
+    const item = customWorkspaceLayouts.find((row) => row.id === workspaceLayoutSelect.value);
+    if (!item || !confirm('刪除「' + item.name + '」版型？')) return;
+    customWorkspaceLayouts = customWorkspaceLayouts.filter((row) => row.id !== item.id);
+    storeWorkspaceLayouts(); refreshWorkspaceLayouts();
+  });
+  refreshWorkspaceLayouts();
   function showPage(page, updateHash = false) {
-    if (!pageTitles[page]) page = 'overview';
+    if (!Object.hasOwn(pageTitles, page)) page = 'overview';
     if (page !== 'workspace') restoreWorkspacePanels();
     document.querySelector('.lower-grid').hidden = false;
     $('watchlist').hidden = true; $('references').hidden = true;
@@ -1566,7 +1749,8 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
       const grid = document.querySelector('.lower-grid'); grid.hidden = false; grid.classList.add('single-page');
       $('watchlist').hidden = page !== 'watchlist'; $('references').hidden = page !== 'references';
     } else { $(page).hidden = false; }
-    if (page === 'holdingAnalysis' && state.holdings.length && (!heldStockData || heldStockData.holdingId !== $('heldStockSelect').value)) loadHeldStock();
+    if (page === 'holdingAnalysis' && $('heldStockSelect').value && (!heldStockData || heldStockData.holdingId !== $('heldStockSelect').value)) loadHeldStock();
+    if (page === 'riskLab') stressLab.refresh();
     if (page !== 'watchlist' && page !== 'references') document.querySelector('.lower-grid').classList.remove('single-page');
     const activeNavGroup = [...document.querySelectorAll('.sidebar nav .nav-link')].find((link) => link.hash === `#${page}`)?.closest('.nav-group');
     document.querySelectorAll('.sidebar nav .nav-group').forEach((group) => { group.open = group === activeNavGroup; });
@@ -1578,12 +1762,86 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
     if (page === 'overview' && servicesStarted && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes();
     if (window.scrollY > 0) window.scrollTo(0, 0);
   }
-  document.querySelector('.sidebar nav').addEventListener('click', (event) => { const link = event.target.closest('.nav-link'); if (!link) return; event.preventDefault(); showPage(link.hash.slice(1), true); });
-  document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); showPage('overview', true); });
+  function setMobileNav(open) {
+    $('appSidebar').toggleAttribute('data-mobile-open', open);
+    $('mobileNavToggle').setAttribute('aria-expanded', String(open));
+  }
+  $('mobileNavToggle').addEventListener('click', () => setMobileNav(!$('appSidebar').hasAttribute('data-mobile-open')));
+  document.querySelector('.sidebar nav').addEventListener('click', (event) => {
+    const link = event.target.closest('.nav-link');
+    if (!link) return;
+    event.preventDefault(); setMobileNav(false); showPage(link.hash.slice(1), true);
+  });
+  document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); setMobileNav(false); showPage('overview', true); });
   window.addEventListener('hashchange', () => showPage(location.hash.slice(1)));
+  const stressLab = mountPortfolioStress($('riskLab'), {
+    getPositions: () => state.holdings.map((item) => {
+      const quote = holdingQuote(item), currency = holdingCurrency(item);
+      return { id: item.id, name: item.name, shares: num(item.shares), price: livePrice(item), market: holdingMarket(item),
+        marketName: marketLabels[holdingMarket(item)] || '其他市場', currency,
+        fallback: !quote, source: quote ? (quote.source || 'TWSE／TPEx') + ' · ' + (quote.datetime || quote.date || '日期未提供') : '備用價格'
+      };
+    }).filter((row) => row.currency),
+    onSave: ({ group, change, current, stressed, difference, rows, excluded }) => {
+      const amount = (value) => formatScenarioMoney(value, group.currency);
+      $('journalForm').reset();
+      $('journalTitle').value = group.label + ' 持倉壓力測試';
+      $('journalThesis').value = [
+        '基準情境 ' + pct(change) + '。參考市值 ' + amount(current) + '，情境市值 ' + amount(stressed) + '，差額 ' + amount(difference) + '。',
+        ...rows.slice(0, 5).map((row) => row.name + ' · ' + pct(row.shock) + ' · 影響 ' + amount(row.difference) + ' · ' + row.source),
+        excluded ? excluded + ' 筆缺少可用價格。' : '',
+        '股數固定，未計匯率、稅費及股利。'
+      ].filter(Boolean).join('\n').slice(0, 1200);
+      $('journalDialog').showModal();
+    }
+  });
+  $('overviewRiskLink').addEventListener('click', (event) => {
+    event.preventDefault(); showPage('riskLab', true); stressLab.refresh($('overviewMarketFilter').value);
+  });
+  function openMarketLookup(query, market) {
+    showPage('stockDesk', true);
+    if (Object.hasOwn(marketLabels, market)) $('stockLookupMarket').value = market;
+    $('stockLookupMarket').dispatchEvent(new Event('change'));
+    $('stockLookupInput').value = query;
+    $('stockLookupForm').requestSubmit();
+  }
+  const quickAliases = { riskLab: '風險壓力回落持股風險 stress', workspace: '版型面板排版 desk', stockDesk: '報價個股行情自選 lookup',
+    ledger: '交易買進賣出股利', topup: '加倉補倉回本試算', news: '市場動態新聞公告', candidates: '選股推薦股號', watchlist: '趨勢觀察價格' };
+  mountQuickSearch({
+    button: $('openQuickSearch'), dialog: $('quickSearchDialog'), input: $('quickSearchInput'), results: $('quickSearchResults'),
+    canOpen: () => !$('appShell').hidden,
+    getEntries: (query) => {
+      const features = Object.entries(pageTitles).map(([id, label]) => ({ id, label, kind: 'feature', detail: '功能',
+        keywords: quickAliases[id] || id, featured: ['overview','holdings','stockDesk','riskLab','workspace'].includes(id), run: () => showPage(id, true) }));
+      if (!query) return features;
+      const held = state.holdings.map((item) => ({ id: 'holding:' + item.id, label: item.name,
+        detail: (marketLabels[holdingMarket(item)] || '個股') + ' · 編輯持股', keywords: item.symbol || '', run: () => openHolding(item) }));
+      const watched = state.watchlist.map((code) => ({ id: 'watch:' + code, label: code + ' ' + (quoteMap.get(String(code))?.name || ''),
+        detail: '台灣 · 自選股票', run: () => openMarketLookup(code, 'tw') }));
+      const lookup = { id: 'lookup', kind: 'lookup', label: '在個股查詢搜尋「' + query + '」', detail: '使用個股頁目前的市場設定',
+        run: () => openMarketLookup(query, $('stockLookupMarket').value) };
+      return [...features, ...held, ...watched, lookup];
+    }
+  });
   function updateTransactionLabel() { const dividend = $('transactionType').value === 'dividend'; $('transactionPriceLabel').firstChild.textContent = dividend ? '每股股利' : '成交價（每股）'; }
   function openStockAnalysis(code) { $('trendSymbol').value = code; showPage('trendAnalysis', true); $('loadTrend').click(); }
-  function renderLedger() { const rows = [...state.transactions].sort((a,b) => b.date.localeCompare(a.date)); $('transactionsBody').innerHTML = rows.map((row) => { const type = { buy: '買進', sell: '賣出', dividend: '股利' }[row.type] || row.type, amount = row.type === 'dividend' ? num(row.shares) * num(row.price) : row.type === 'sell' ? num(row.realizedPnl) : -(num(row.shares) * num(row.price) + num(row.fees) + num(row.tax)); return `<tr><td>${esc(row.date)}</td><td>${esc(row.stock)}${row.note ? `<small class="stock-sub">${esc(row.note)}</small>` : ''}</td><td>${type}</td><td>${num(row.shares).toLocaleString('zh-TW')}</td><td>${money(row.price)}</td><td>${money(num(row.fees)+num(row.tax))}</td><td class="${amount < 0 ? 'negative' : 'positive'}">${money(amount)}</td></tr>`; }).join(''); $('emptyTransactions').style.display = rows.length ? 'none' : 'block'; }
+  function netDividend(row) { return num(row.shares) * num(row.price) - num(row.fees) - num(row.tax); }
+  function renderLedger() {
+    const typeFilter = $('ledgerTypeFilter').value, query = $('ledgerTextFilter').value.trim().toLocaleLowerCase();
+    const rows = [...state.transactions].reverse().filter((row) => (!typeFilter || row.type === typeFilter) && String(row.stock).toLocaleLowerCase().includes(query))
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    $('transactionsBody').innerHTML = rows.map((row) => {
+      const type = { buy: '買進', sell: '賣出', dividend: '股利' }[row.type] || '其他';
+      const fees = num(row.fees) + num(row.tax);
+      const amount = row.type === 'dividend' ? netDividend(row) : row.type === 'sell' ? num(row.realizedPnl) : -(num(row.shares) * num(row.price) + fees);
+      return `<tr><td>${esc(row.date)}</td><td>${esc(row.stock)}${row.note ? `<small class="stock-sub">${esc(row.note)}</small>` : ''}</td><td>${type}</td><td>${num(row.shares).toLocaleString('zh-TW')}</td><td>${money(row.price)}</td><td>${money(fees)}</td><td class="${amount < 0 ? 'negative' : 'positive'}">${money(amount)}</td></tr>`;
+    }).join('');
+    $('emptyTransactions').hidden = rows.length > 0;
+    $('emptyTransactions').querySelector('b').textContent = state.transactions.length ? '沒有符合篩選的交易' : '還沒有交易紀錄';
+    $('emptyTransactions').querySelector('p').textContent = state.transactions.length ? '試試清除關鍵字或切換交易類型。' : '初始持股可先新增，再記錄之後的交易。';
+  }
+  $('ledgerTypeFilter').addEventListener('change', renderLedger);
+  $('ledgerTextFilter').addEventListener('input', renderLedger);
   function renderAllocation() { const holdings = state.holdings.filter((item) => holdingMarket(item) === 'tw'), total = holdings.reduce((sum,item) => sum + livePrice(item)*num(item.shares),0), targets = holdings.reduce((sum,item) => sum + num(item.targetWeight),0); $('allocationContent').innerHTML = holdings.length ? `<div class="allocation-summary">已設定目標 ${targets.toFixed(1)}%${targets > 0 && Math.abs(targets-100)>0.5 ? ' · 目標比例合計未達 100%' : ''}</div>` + holdings.map((item) => { const actual = total ? livePrice(item)*num(item.shares)/total*100 : 0, target = num(item.targetWeight), diff = actual-target; return `<div class="allocation-row"><div class="allocation-label"><b>${esc(item.name)}</b><span>目前 ${actual.toFixed(1)}% · 目標 ${target ? `${target.toFixed(1)}%` : '未設定'} · 差距 ${target ? `${diff > 0 ? '+' : ''}${diff.toFixed(1)}%` : '—'}</span></div><div class="allocation-track"><i style="width:${Math.min(actual,100)}%"></i></div></div>`; }).join('') : '<div class="feature-empty">新增持股後可設定每檔目標比例。</div>'; }
   function renderAlerts() { $('alertsContent').innerHTML = state.alerts.length ? [...state.alerts].reverse().map((row) => `<article class="record-card"><div><b>${esc(row.stock)} · ${row.direction === 'above' ? '到達／高於' : '到達／低於'} ${money(row.target)}</b><p>${row.active ? '等待行情觸發' : `已於 ${esc(row.triggeredAt || '')} 觸發，當時 ${money(row.triggeredPrice)}`}${row.source === 'topup' ? ' · 到價後請重新檢視，不代表加碼建議' : ''}</p></div><button class="row-action" data-delete-alert="${esc(row.id)}" title="刪除提醒">×</button></article>`).join('') : '<div class="feature-empty">尚未設定價格提醒。</div>'; }
   function evaluateAlerts() { let changed = false, triggered = []; state.alerts.forEach((row) => { if (!row.active) return; const price = quoteMap.get(stockCode(row.stock))?.price; if (price == null) return; if ((row.direction === 'above' && price >= row.target) || (row.direction === 'below' && price <= row.target)) { row.active = false; row.triggeredAt = isoToday(); row.triggeredPrice = price; triggered.push(row.stock); changed = true; } }); if (changed) { persist(); renderAlerts(); showToast(`價格提醒觸發：${triggered.join('、')}`); } }

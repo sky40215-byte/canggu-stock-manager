@@ -1,5 +1,6 @@
-import { marketTotals } from './portfolio-math.js?v=20261125c';
-import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125c';
+import { marketTotals } from './portfolio-math.js?v=20261125d';
+import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
+import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
 
 const markets = {
   tw: { currency: 'TWD', budget: 20000, items: [
@@ -34,17 +35,21 @@ function renderDemoMarket() {
   }).join('');
   $('demoScenario').hidden = true;
   comparison = null;
+  demoStress.refresh($('demoMarket').value);
 }
 
-function saveDemoScenario(item, scenario) {
-  const money = (number) => formatScenarioMoney(number, item.currency);
+function saveDemoEntry(title, text) {
   const entry = document.createElement('article');
   const heading = document.createElement('h3'), detail = document.createElement('p');
-  heading.textContent = item.name + ' · 持倉情境';
-  detail.textContent = `示範資料 ${date}。假設於 ${money(scenario.buyPrice)} 買入、未來股價 ${money(scenario.futurePrice)}。不加碼損益 ${money(scenario.baseline.pnl)}，加碼損益 ${money(scenario.added.pnl)}。`;
+  heading.textContent = title;
+  detail.textContent = text;
   entry.append(heading, detail);
   $('demoJournalEntries').prepend(entry);
   $('demoJournal').hidden = false;
+}
+function saveDemoScenario(item, scenario) {
+  const money = (number) => formatScenarioMoney(number, item.currency);
+  saveDemoEntry(item.name + ' · 持倉情境', `示範資料 ${date}。假設於 ${money(scenario.buyPrice)} 買入、未來股價 ${money(scenario.futurePrice)}。不加碼損益 ${money(scenario.baseline.pnl)}，加碼損益 ${money(scenario.added.pnl)}。`);
   $('demoSaveStatus').textContent = '已存入這次的示範日誌。';
 }
 
@@ -85,6 +90,15 @@ $('demoHoldings').addEventListener('click', (event) => {
   if (!button) return;
   const holding = activeMarket().items.find((item) => item.id === button.dataset.demoHolding);
   if (holding) openDemoScenario(holding);
+});
+const demoStress = mountPortfolioStress($('demoStress'), {
+  getPositions: () => Object.entries(markets).flatMap(([market, group]) => group.items.map((item) => ({
+    ...item, currency: group.currency, market, marketName: market === 'tw' ? '台灣' : '美國', source: '固定示範 · ' + date
+  }))),
+  onSave: ({ group, change, difference }) => {
+    saveDemoEntry(group.label + ' · 持倉壓力測試', '基準情境 ' + change + '%，估算市值變動 ' + formatScenarioMoney(difference, group.currency) + '。');
+    $('demoJournal').scrollIntoView({ block: 'start' });
+  }
 });
 renderDemoMarket();
 

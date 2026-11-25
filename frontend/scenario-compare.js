@@ -1,4 +1,4 @@
-import { compareTopup } from './portfolio-math.js?v=20261125c';
+import { compareTopup } from './portfolio-math.js?v=20261125d';
 
 export function formatScenarioMoney(amount, currency = 'TWD') {
   if (amount == null || !Number.isFinite(Number(amount))) return '—';

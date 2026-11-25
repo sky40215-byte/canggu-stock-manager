@@ -75,6 +75,7 @@ async function finMindDataset(dataset, symbol, startDate) {
     if (error?.status === 402) throw Object.assign(new Error('FinMind API 使用額度已達上限（402）。請設定 FINMIND_TOKEN 或稍後再試。'), { status: 502 });
     throw error;
   }
+  if (Number(payload.status) === 402) throw new Error('FinMind API 使用額度已達上限（402）。');
   if (payload.status !== 200 || !Array.isArray(payload.data)) throw new Error(payload.msg || 'FinMind 暫時無法提供資料。');
   return payload.data;
 }
@@ -83,10 +84,22 @@ async function fundamentals(symbol) {
   if (cached && cached.expiresAt > Date.now()) return cached.data;
   const start = new Date(); start.setDate(start.getDate() - 450);
   const startDate = start.toISOString().slice(0, 10);
-  const [valuationRows, revenueRows] = await Promise.all([
+  const revenueStart = new Date(); revenueStart.setDate(revenueStart.getDate() - 760);
+  const [valuationResult, revenueResult] = await Promise.allSettled([
     finMindDataset('TaiwanStockPER', symbol, startDate),
-    finMindDataset('TaiwanStockMonthRevenue', symbol, startDate)
+    finMindDataset('TaiwanStockMonthRevenue', symbol, revenueStart.toISOString().slice(0, 10))
   ]);
+  const errors = [valuationResult, revenueResult].filter((result) => result.status === 'rejected');
+  if (errors.length === 2) {
+    if (cached) return { ...cached.data, stale: true, warnings: ['FinMind 暫時無法更新，已保留上次取得的資料。'] };
+    throw errors[0].reason;
+  }
+  const valuationRows = valuationResult.status === 'fulfilled' ? valuationResult.value : [];
+  const revenueRows = revenueResult.status === 'fulfilled' ? revenueResult.value : [];
+  const warnings = [
+    valuationResult.status === 'rejected' ? '估值資料暫時無法取得。' : '',
+    revenueResult.status === 'rejected' ? '月營收資料暫時無法取得。' : ''
+  ].filter(Boolean);
   const valuation = valuationRows.filter((row) => row.date).sort((a, b) => String(b.date).localeCompare(String(a.date)))[0] || null;
   const metricNumber = (raw) => raw == null || String(raw).trim() === '' || /^n\/a$/i.test(String(raw).trim()) ? null : Number.isFinite(Number(raw)) ? Number(raw) : null;
   const byMonth = new Map(revenueRows.map((row) => [`${row.revenue_year}-${String(row.revenue_month).padStart(2, '0')}`, row]));
@@ -105,9 +118,10 @@ async function fundamentals(symbol) {
     } : null,
     revenue,
     source: 'FinMind 免費台股資料',
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    warnings
   };
-  fundamentalsCache.set(symbol, { data, expiresAt: Date.now() + 30 * 60 * 1000 });
+  fundamentalsCache.set(symbol, { data, expiresAt: Date.now() + (errors.length ? 2 : 30) * 60 * 1000 });
   if (fundamentalsCache.size > 200) fundamentalsCache.delete(fundamentalsCache.keys().next().value);
   return data;
 }
@@ -122,10 +136,19 @@ async function quotes() {
     if (!Array.isArray(rows)) throw new Error(`${market}行情格式不符`);
     return rows.map((row) => normalize(row, market)).filter(Boolean);
   }));
-  const merged = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  const previous = marketQuotesCache.data?.quotes || [];
+  const warnings = [];
+  const current = results.filter((result) => result.status === 'fulfilled' && result.value.length > 0).length;
+  const merged = results.flatMap((result, index) => {
+    if (result.status === 'fulfilled' && result.value.length) return result.value;
+    const market = sources[index][0];
+    const cachedRows = previous.filter((row) => row.market === market);
+    warnings.push(market + (cachedRows.length ? '行情暫未更新，沿用上次資料' : '行情暫時無法取得'));
+    return cachedRows;
+  });
   if (!merged.length) throw new Error('行情來源目前無法連線，請稍後再試。');
-  const data = { quotes: merged, updatedAt: new Date().toISOString(), source: 'TWSE／TPEx 官方 OpenAPI', sourceType: 'official_daily_close', warnings: results.map((r, i) => r.status === 'rejected' ? `${sources[i][0]}市場資料暫時無法取得` : null).filter(Boolean) };
-  marketQuotesCache = { data, expiresAt: Date.now() + 5 * 60 * 1000 };
+  const data = { quotes: merged, updatedAt: new Date().toISOString(), source: 'TWSE／TPEx 官方 OpenAPI', sourceType: 'official_daily_close', warnings, stale: current === 0 };
+  marketQuotesCache = { data, expiresAt: Date.now() + (warnings.length ? 1 : 5) * 60 * 1000 };
   return data;
 }
 const internationalMarkets = {
@@ -953,7 +976,11 @@ const server = http.createServer(async (req, res) => {
       const code = String(body.code || '').trim();
       const name = String(body.name || '').replace(/[<>]/g, '').slice(0, 80);
       const eventDate = String(body.eventDate || '').slice(0, 10);
-      if (!/^\d{4}$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || Number.isNaN(Date.parse(`${eventDate}T00:00:00Z`))) return send(res, 400, { error: '請選擇有效的台股代號與新聞日期。' });
+      const parsedDate = new Date(eventDate + 'T00:00:00Z');
+      if (!/^\d{4}$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) ||
+          Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== eventDate) {
+        return send(res, 400, { error: '請選擇有效的台股代號與新聞日期。' });
+      }
       if (!FUGLE_API_KEY) return send(res, 503, { error: '尚未設定 Fugle API 金鑰，無法讀取歷史日 K。' });
       const trend = await fugleTrend(code, 450);
       const eventIndex = trend.candles.findLastIndex((row) => String(row.date).slice(0, 10) < eventDate);
@@ -970,36 +997,47 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/international-research' && req.method === 'POST') {
       let user = null;
       if (process.env.NODE_ENV === 'production' || SUPABASE_URL) { user = await requireAuthenticatedUser(req, res); if (!user) return; }
-      const rateKey = user?.id || req.socket.remoteAddress || 'local';
-      if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時助理整理次數已達上限，請稍後再試。' });
       const body = await readJsonBody(req);
       const companyName = String(body.companyName || '').trim().slice(0, 80);
       const ticker = String(body.ticker || '').trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '').slice(0, 12);
       const relation = String(body.relation || '').trim().slice(0, 160);
-      const provider = body.provider === 'gemini' ? 'gemini' : body.provider === 'ollama' ? 'ollama' : '';
+      const provider = ['gemini', 'ollama', 'sources'].includes(body.provider) ? body.provider : '';
+      const useAI = provider !== 'sources';
       const requestedCodes = [...new Set(String(body.taiwanCodes || '').split(/[,，、\s]+/).map((code) => code.trim()).filter((code) => /^\d{4,6}$/.test(code)))].slice(0, 8);
       if (!companyName) return send(res, 400, { error: '請填國外公司名稱。台股代號可留白，由 AI 從上市櫃公司中尋找可能受影響的標的。' });
-      if (!provider || !aiProviderConfigured(provider)) return send(res, 503, { error: provider === 'gemini' ? 'Gemini 尚未設定，請改選已設定的 Ollama 或 Gemini。' : 'Ollama 尚未設定服務網址，請改選已設定的 AI 服務。' });
-      if (body.aiConsent !== true) return send(res, 400, { error: '請先閱讀並勾選資料傳送同意。' });
+      if (!provider) return send(res, 400, { error: '請選擇查看公開來源或 AI 整理。' });
+      if (useAI && body.aiConsent !== true) return send(res, 400, { error: '請先閱讀並勾選資料傳送同意。' });
+      const rateKey = user?.id || req.socket.remoteAddress || 'local';
+      if (!checkAssistantRateLimit((useAI ? 'research-ai:' : 'research-sources:') + rateKey)) return send(res, 429, { error: '每小時查詢次數已達上限，請稍後再試。' });
       const [newsResult, secResult, marketResult] = await Promise.allSettled([internationalNewsResearch(companyName, ticker), secCompanyResearch(ticker, companyName), quotes()]);
       const newsData = newsResult.status === 'fulfilled' ? newsResult.value : { items: [], available: false, reason: newsResult.reason?.message || '海外新聞來源暫時無法取得。' };
       const headlines = newsData.items;
       const sec = secResult.status === 'fulfilled' ? secResult.value : { available: false, reason: secResult.reason?.message || 'SEC 資料暫時無法取得。', filings: [], financials: [] };
-      if (marketResult.status !== 'fulfilled') throw Object.assign(new Error('目前無法取得上市櫃股票名單，因此無法可靠地自動配對台股。請稍後重試。'), { status: 503 });
-      const marketRows = marketResult.value.quotes.filter((row) => /^\d{4}$/.test(String(row.code)) && !String(row.code).startsWith('0') && Number(row.price) > 0 && !/(ETF|基金|存託|權證|牛|熊|期貨|債)/i.test(String(row.name)));
+      const marketRows = (marketResult.status === 'fulfilled' ? marketResult.value.quotes : []).filter((row) => /^\d{4}$/.test(String(row.code)) && !String(row.code).startsWith('0') && Number(row.price) > 0 && !/(ETF|基金|存託|權證|牛|熊|期貨|債)/i.test(String(row.name)));
       const marketByCode = new Map(marketRows.map((row) => [String(row.code), row]));
       const validRequestedCodes = requestedCodes.filter((code) => marketByCode.has(code));
       const modelUniverse = provider === 'ollama'
         ? [...new Map([...marketRows.slice().sort((a, b) => Number(b.turnover || 0) - Number(a.turnover || 0)).slice(0, 500), ...validRequestedCodes.map((code) => marketByCode.get(code))].filter(Boolean).map((row) => [String(row.code), row])).values()]
         : marketRows;
       const research = { foreignCompany: companyName, ticker, relation, requestedCodes: validRequestedCodes, unrecognizedCodes: requestedCodes.filter((code) => !marketByCode.has(code)), headlines, newsStatus: newsResult.status === 'fulfilled' ? newsData : { available: false, reason: newsData.reason }, sec, taiwan: [], generatedAt: new Date().toISOString() };
+      const requestedStocks = validRequestedCodes.map((code) => {
+        const row = marketByCode.get(code);
+        return { code, name: row.name, market: row.market, dailyClose: row.price, dailyDate: row.date, impact: '手動指定', reason: '你指定檢視的股票，可用於歷史事件回放。' };
+      });
+      const respondWithSources = (summary, warning = '') => send(res, 200, {
+        research, provider: 'sources', warning,
+        impactAnalysis: { summary, industries: [], stocks: [], requestedStocks, risks: [] }
+      });
+      if (!useAI) return respondWithSources('已整理可用的公開新聞與申報資料。');
+      if (!aiProviderConfigured(provider)) return respondWithSources('可先閱讀下方來源。', '選取的 AI 尚未設定，已保留公開資料。');
+      if (!marketRows.length) return respondWithSources('可先閱讀下方來源。', '台股名單暫時無法讀取，已保留公開資料。');
       const sourceItems = [
         ...headlines.map((item, index) => ({ id: `N${index + 1}`, type: 'news', title: item.title, date: item.publishedAt, source: item.source, summary: item.description, url: item.link })),
         ...(sec.filings || []).map((item, index) => ({ id: `F${index + 1}`, type: 'filing', title: `${item.form} ${item.description || ''}`.trim(), date: item.date, period: item.period, url: item.url })),
         ...(sec.financials || []).map((item, index) => ({ id: `M${index + 1}`, type: 'financial', title: item.label, date: item.end, value: item.value, unit: item.unit, form: item.form }))
       ];
       const sourceAvailable = sourceItems.some((item) => item.type === 'news' || item.type === 'filing' || item.type === 'financial');
-      if (!sourceAvailable) return send(res, 200, { research, impactAnalysis: { summary: '目前沒有取得可用的海外新聞或財報資料，因此不進行台灣產業與個股推論，避免憑空配對。', industries: [], stocks: [], requestedStocks: validRequestedCodes.map((code) => ({ code, name: marketByCode.get(code).name, market: marketByCode.get(code).market, impact: '尚無資料判斷', reason: '此為你手動指定的檢視股票；目前沒有海外事件來源，不能判定它與該事件有關。', confidence: '低', evidence: [] })), risks: [newsData.reason || 'Google News 目前沒有找到相關文章。', sec.reason || 'SEC 申報資料不可用。'] }, provider });
+      if (!sourceAvailable) return respondWithSources('目前未取得可用的海外新聞或申報資料。');
       const question = [{ role: 'user', content: `研究海外公司「${companyName}${ticker ? `（${ticker}）` : ''}」的新聞、財報與申報，判斷可能受影響的台灣產業及個股。使用者提供的產業／供應鏈線索：${relation || '無；請勿假設有已驗證的供應鏈關係。'}。使用者另外指定檢視：${validRequestedCodes.join('、') || '無'}。\n\n你會收到來源清單，每項有 ID。只能根據來源清單提供的事實進行推論；新聞標題可能不完整。每個產業或個股的 evidence 必須列出實際支持該項判斷的來源 ID（例如 N1、F2、M1），沒有直接或可解釋的依據就不要列入。若來源沒有明確證實供應鏈關係，請明說這是產業傳導推論，不可寫成已證實供應鏈。逐檔說明「來源事實 → 傳導方式 → 可能影響」，並列出反向因素或尚待查證事項。指定檢視的股票如無證據，請勿放進 stocks。\n\n只輸出 JSON：{"summary":"...","industries":[{"name":"產業","impact":"可能影響","transmission":"來源事實及具體傳導途徑","confidence":"高/中/低","evidence":["N1"]}],"stocks":[{"code":"上市櫃名單中的四位代號","industry":"對應產業","impact":"可能受惠/可能承壓/雙向影響","reason":"來源事實 → 公司曝險與傳導推論 → 不確定性","horizon":"短期/中期/長期","confidence":"高/中/低","evidence":["N1"]}],"risks":["需查證事項"]}。最多 5 個產業、8 檔股票。只選下方上市櫃名單有列出的股票，代號精確相符。不要為了湊數列股；不確定就少列或不列。信心是模型定性判斷，不是機率或勝率。不預測確定漲跌或提供買賣指令。` }];
       const modelContext = {
         foreignCompany: research.foreignCompany,
@@ -1009,7 +1047,9 @@ const server = http.createServer(async (req, res) => {
         sources: sourceItems,
         availableTaiwanStocks: modelUniverse.map(({ code, name }) => ({ code: String(code), name }))
       };
-      const impactAnalysis = await askInternationalAnalysis(question, JSON.stringify(modelContext), provider);
+      let rawAnalysis;
+      try { rawAnalysis = await askInternationalAnalysis(question, JSON.stringify(modelContext), provider); }
+      catch { return respondWithSources('可先閱讀下方來源。', 'AI 暫時無法整理，已保留公開資料。'); }
       const cleanText = (value, max = 500) => String(value || '').replace(/[<>]/g, '').slice(0, max);
       const validSourceIds = new Set(sourceItems.map((item) => item.id));
       const sourceById = new Map(sourceItems.map((item) => [item.id, item]));
@@ -1021,7 +1061,9 @@ const server = http.createServer(async (req, res) => {
         return { count: cited.length, types: types.map((type) => typeLabels[type] || type) };
       };
       const hasValidEvidence = (item) => Array.isArray(item?.evidence) && item.evidence.some((id) => validSourceIds.has(String(id)));
-      const modelStocks = (Array.isArray(impactAnalysis.stocks) ? impactAnalysis.stocks : []).filter((item) => item && typeof item === 'object' && marketByCode.has(String(item.code)) && hasValidEvidence(item));
+      const modelStocks = [...new Map((Array.isArray(rawAnalysis.stocks) ? rawAnalysis.stocks : [])
+        .filter((item) => item && typeof item === 'object' && marketByCode.has(String(item.code)) && hasValidEvidence(item))
+        .map((item) => [String(item.code), item])).values()];
       const validStocks = modelStocks.slice(0, 8);
       const taiwan = await Promise.all(validStocks.slice(0, 8).map(async (item) => {
         const row = marketByCode.get(String(item.code));
@@ -1029,12 +1071,12 @@ const server = http.createServer(async (req, res) => {
         try { quote = await quoteWithFallback(String(item.code), marketRows); } catch (error) { quoteError = error.message || '報價暫時無法取得。'; }
         return { ...item, code: String(item.code), name: row.name, market: row.market, dailyClose: row.price, dailyDate: row.date, quote, quoteError };
       }));
-      impactAnalysis = {
-        summary: cleanText(impactAnalysis.summary, 900),
-        industries: (Array.isArray(impactAnalysis.industries) ? impactAnalysis.industries : []).filter((item) => item && typeof item === 'object' && hasValidEvidence(item)).slice(0, 5).map((item) => { const evidence = cleanEvidence(item.evidence); return { name: cleanText(item.name, 100), impact: cleanText(item.impact, 400), transmission: cleanText(item.transmission, 400), confidence: ['高', '中', '低'].includes(item.confidence) ? item.confidence : '低', evidence, evidenceSummary: summarizeEvidence(evidence) }; }),
+      const impactAnalysis = {
+        summary: cleanText(rawAnalysis.summary, 900),
+        industries: (Array.isArray(rawAnalysis.industries) ? rawAnalysis.industries : []).filter((item) => item && typeof item === 'object' && hasValidEvidence(item)).slice(0, 5).map((item) => { const evidence = cleanEvidence(item.evidence); return { name: cleanText(item.name, 100), impact: cleanText(item.impact, 400), transmission: cleanText(item.transmission, 400), confidence: ['高', '中', '低'].includes(item.confidence) ? item.confidence : '低', evidence, evidenceSummary: summarizeEvidence(evidence) }; }),
         stocks: taiwan.map(({ code, name, market, dailyClose, dailyDate, quote, quoteError, ...impact }) => { const evidence = cleanEvidence(impact.evidence); return { code, name, market, dailyClose, dailyDate, quote, quoteError, industry: cleanText(impact.industry, 100), impact: cleanText(impact.impact, 40), reason: cleanText(impact.reason, 500), horizon: cleanText(impact.horizon, 30), confidence: ['高', '中', '低'].includes(impact.confidence) ? impact.confidence : '低', evidence, evidenceSummary: summarizeEvidence(evidence) }; }),
         requestedStocks: validRequestedCodes.filter((code) => !validStocks.some((item) => String(item.code) === code)).map((code) => { const row = marketByCode.get(code); return { code, name: row.name, market: row.market, dailyClose: row.price, dailyDate: row.date, impact: '尚無足夠證據', reason: '這是你指定檢視的股票；已取得的新聞與申報來源不足以確認它和本次事件的關聯。', confidence: '低', evidence: [] }; }),
-        risks: (Array.isArray(impactAnalysis.risks) ? impactAnalysis.risks : []).map((risk) => cleanText(risk, 300)).filter(Boolean).slice(0, 8)
+        risks: (Array.isArray(rawAnalysis.risks) ? rawAnalysis.risks : []).map((risk) => cleanText(risk, 300)).filter(Boolean).slice(0, 8)
       };
       research.taiwan = taiwan;
       return send(res, 200, { research, impactAnalysis, provider });

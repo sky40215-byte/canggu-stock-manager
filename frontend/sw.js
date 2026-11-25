@@ -1,13 +1,15 @@
-const CACHE_NAME = 'canggu-app-shell-v14';
+const CACHE_NAME = 'canggu-app-shell-v15';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/styles.css?v=20261125c',
-  '/app.js?v=20261125c',
-  '/portfolio-math.js?v=20261125c',
-  '/scenario-compare.js?v=20261125c',
+  '/styles.css?v=20261125d',
+  '/app.js?v=20261125d',
+  '/portfolio-math.js?v=20261125d',
+  '/scenario-compare.js?v=20261125d',
+  '/portfolio-stress.js?v=20261125d',
+  '/quick-search.js?v=20261125d',
   '/demo.html',
-  '/demo.js?v=20261125c',
+  '/demo.js?v=20261125d',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -40,6 +42,8 @@ self.addEventListener('fetch', (event) => {
       if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
       return response;
     });
-    return cached || refresh;
+    if (!cached) return refresh;
+    void refresh.catch(() => {});
+    return cached;
   }));
 });

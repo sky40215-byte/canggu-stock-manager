@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#14394e">
   <title>端股｜競賽示範</title>
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=20261125c">
+  <link rel="stylesheet" href="/styles.css?v=20261125d">
 </head>
 <body class="demo-page">
   <main class="demo-shell">
@@ -35,7 +35,18 @@
     <section class="demo-panel" id="demoJournal" aria-labelledby="demoJournalTitle" hidden>
       <h2 id="demoJournalTitle">示範日誌</h2><div id="demoJournalEntries"></div>
     </section>
+    <details class="demo-panel" id="demoStress">
+      <summary><strong>進一步體驗整組持倉壓力測試</strong></summary>
+      <div class="risk-parameters" data-stress-parameters>
+        <label>市場與幣別<select data-stress-scope></select></label>
+        <label>全組價格變動（%）<input type="number" min="-100" max="100" step="0.1" value="-10" data-stress-shock></label>
+        <div class="risk-presets"><button type="button" class="secondary-button" data-stress-preset="-5">回落 5%</button><button type="button" class="secondary-button" data-stress-preset="-20">回落 20%</button><button type="button" class="secondary-button" data-stress-clear>清除個股設定</button></div>
+      </div>
+      <p class="risk-status" data-stress-status role="status"></p><div class="risk-metrics" data-stress-metrics></div>
+      <div class="risk-table-wrap"><table><caption class="sr-only">模擬持倉個別影響</caption><thead><tr><th scope="col">持股</th><th scope="col">參考市值</th><th scope="col">個股漲跌（%）</th><th scope="col">情境市值</th><th scope="col">影響金額</th></tr></thead><tbody data-stress-rows></tbody></table></div>
+      <button type="button" class="secondary-button" data-stress-save disabled>存入示範日誌</button>
+    </details>
   </main>
-  <script type="module" src="/demo.js?v=20261125c"></script>
+  <script type="module" src="/demo.js?v=20261125d"></script>
 </body>
 </html>
