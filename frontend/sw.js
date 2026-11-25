@@ -1,9 +1,9 @@
-const CACHE_NAME = 'canggu-app-shell-v12';
+const CACHE_NAME = 'canggu-app-shell-v13';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/styles.css?v=20261125a',
-  '/app.js?v=20261125a',
+  '/styles.css?v=20261125b',
+  '/app.js?v=20261125b',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

@@ -10,7 +10,6 @@
   const overviewQuoteJobs = new Map();
   const overviewQuoteStatus = new Map();
   let lastInternationalQuote = null;
-  let internationalHoldingButton = null;
   let stockLookupRequest = 0;
   let quoteRefreshPromise = null;
   let lastQuoteFetchAt = 0;
@@ -241,7 +240,7 @@
     $('refreshMarketHoldings').disabled = overviewQuoteJobs.has(market);
     $('refreshMarketHoldings').textContent = overviewQuoteJobs.has(market) ? '更新中…' : '更新行情';
     if (!holdings.length) {
-      container.innerHTML = market === 'tw' ? '<div class="overview-empty"><span>目前還沒有台股持倉</span><small>新增股票後，這裡會顯示市值較高的部位與目前損益。</small><a href="#holdings">前往管理持股 ↗</a></div>' : `<div class="overview-empty"><span>尚未加入${esc(marketLabels[market] || '此市場')}持股</span><small>到個股查詢切換市場、查詢股票，再按「加入總覽持股」。</small><a href="#stockDesk">前往海外個股查詢 ↗</a></div>`;
+      container.innerHTML = market === 'tw' ? '<div class="overview-empty"><span>目前還沒有台股持倉</span><small>新增股票後，這裡會顯示市值較高的部位與目前損益。</small><a href="#holdings">前往管理持股 ↗</a></div>' : `<div class="overview-empty"><span>尚未加入${esc(marketLabels[market] || '此市場')}持股</span><small>到個股查詢搜尋股票，再按「加入持股」。</small><a href="#stockDesk">前往海外個股查詢 ↗</a></div>`;
       return;
     }
     container.innerHTML = holdings.map((item) => {
@@ -343,18 +342,34 @@
     overviewQuoteJobs.set(market, job);
     renderOverviewHoldings();
   }
+  function renderInternationalSearch(data, query) {
+    if (!data.results.length) {
+      $('stockLookupResult').innerHTML = `<div class="feature-empty">在${esc(data.label)}市場找不到「${esc(query)}」，可試公司英文名稱或代號。</div>`;
+      return;
+    }
+    $('stockLookupResult').innerHTML = `<div class="global-market-search-list">
+      ${data.results.map((item, index) => `<article>
+        <div><b>${esc(item.symbol)} · ${esc(item.name)}</b><small>${esc(item.exchange)} · ${esc(item.country)} · ${esc(item.currency)}${item.access ? ` · 資料權限 ${esc(item.access)}` : ''}</small></div>
+        <div class="global-market-actions">
+          <button type="button" class="secondary-button" data-international-stock="${index}">查看行情</button>
+          <button type="button" class="primary-button" data-add-international-holding="${index}" aria-label="加入持股 ${esc(item.symbol)}">＋ 加入持股</button>
+        </div>
+      </article>`).join('')}
+    </div>`;
+  }
   async function searchInternationalMarket(query) {
     const market = $('stockLookupMarket').value;
     const request = ++stockLookupRequest;
-    if (internationalHoldingButton) internationalHoldingButton.hidden = true;
+    lastInternationalQuote = null;
+    lastInternationalSearch = null;
     $('stockLookupResult').innerHTML = '<div class="feature-empty">正在搜尋海外市場股票…</div>';
     try {
       const response = await internationalMarketFetch(`/api/markets/search?market=${encodeURIComponent(market)}&q=${encodeURIComponent(query)}`);
       const data = await response.json();
       if (request !== stockLookupRequest) return;
       if (!response.ok) throw new Error(data.error || '海外股票搜尋失敗。');
-      lastInternationalSearch = data;
-      $('stockLookupResult').innerHTML = data.results.length ? `<div class="global-market-search-list">${data.results.map((item, index) => `<article><div><b>${esc(item.symbol)} · ${esc(item.name)}</b><small>${esc(item.exchange)} · ${esc(item.country)} · ${esc(item.currency)}${item.access ? ` · 資料權限 ${esc(item.access)}` : ''}</small></div><button type="button" class="secondary-button" data-international-stock="${index}">查看行情</button></article>`).join('')}</div>` : `<div class="feature-empty">在${esc(data.label)}市場找不到「${esc(query)}」，可試公司英文名稱或代號。</div>`;
+      lastInternationalSearch = { ...data, query };
+      renderInternationalSearch(data, query);
     } catch (error) { if (request === stockLookupRequest) $('stockLookupResult').innerHTML = `<div class="feature-empty">${esc(error.message || '海外股票搜尋失敗。')}</div>`; }
   }
   async function loadInternationalQuote(item) {
@@ -369,36 +384,48 @@
       if (!response.ok) throw new Error(data.error || '海外行情讀取失敗。');
       lastInternationalQuote = { ...data, market, symbol: item.symbol, exchange: item.exchange, micCode: item.micCode || '' };
       internationalQuoteMap.set(internationalQuoteKey(lastInternationalQuote), { ...data, fetchedAt: Date.now() });
-      internationalHoldingButton.hidden = false;
       const formatter = { format: (value) => currencyMoney(value, holdingCurrency(data)) };
       const closes = data.candles.map((row) => Number(row.close)).filter((value) => Number.isFinite(value));
       const min = Math.min(...closes), max = Math.max(...closes), span = max - min || 1;
       const points = data.candles.map((row, index) => `${(index / Math.max(1, data.candles.length - 1) * 360).toFixed(1)},${(70 - (Number(row.close) - min) / span * 60).toFixed(1)}`).join(' ');
       const first = data.candles[0], last = data.candles.at(-1), changeClass = data.change < 0 ? 'negative' : 'positive';
-      $('stockLookupResult').innerHTML = `<article class="global-market-quote"><header><div><b>${esc(data.symbol)} · ${esc(data.name)}</b><small>${esc(data.countryLabel)} · ${esc(data.exchange)} · ${esc(data.currency)}</small></div><button type="button" class="secondary-button" data-back-market-search>返回搜尋結果</button></header><div class="global-market-price"><strong>${formatter.format(data.price)}</strong><span class="${changeClass}">${data.change > 0 ? '+' : ''}${formatter.format(data.change)}（${data.changePercent > 0 ? '+' : ''}${data.changePercent.toFixed(2)}%）</span></div>${points ? `<div class="global-market-chart"><svg viewBox="0 0 360 76" role="img" aria-label="${esc(data.symbol)} 近期日收盤價走勢"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><small>日收盤區間 ${formatter.format(min)}–${formatter.format(max)} · ${esc(first?.date || '')} 至 ${esc(last?.date || '')} · ${data.candles.length} 個交易日</small></div>` : '<div class="feature-empty">目前沒有可用的歷史日線。</div>'}<small class="global-market-source">資料來源：${esc(data.source)} · 行情時間 ${esc(data.datetime || data.updatedAt.slice(0, 10))}。${esc(data.priceNote)}</small></article>`;
+      $('stockLookupResult').innerHTML = `<article class="global-market-quote">
+        <header>
+          <div><b>${esc(data.symbol)} · ${esc(data.name)}</b><small>${esc(data.countryLabel)} · ${esc(data.exchange)} · ${esc(data.currency)}</small></div>
+          <div class="global-market-actions">
+            <button type="button" class="secondary-button" data-back-market-search>返回搜尋結果</button>
+            <button type="button" class="primary-button" data-add-international-holding="quote">＋ 加入持股</button>
+          </div>
+        </header>
+        <div class="global-market-price"><strong>${formatter.format(data.price)}</strong><span class="${changeClass}">${data.change > 0 ? '+' : ''}${formatter.format(data.change)}（${data.changePercent > 0 ? '+' : ''}${data.changePercent.toFixed(2)}%）</span></div>
+        ${points ? `<div class="global-market-chart"><svg viewBox="0 0 360 76" role="img" aria-label="${esc(data.symbol)} 近期日收盤價走勢"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><small>日收盤區間 ${formatter.format(min)}–${formatter.format(max)} · ${esc(first?.date || '')} 至 ${esc(last?.date || '')} · ${data.candles.length} 個交易日</small></div>` : '<div class="feature-empty">目前沒有可用的歷史日線。</div>'}
+        <small class="global-market-source">資料來源：${esc(data.source)} · 行情時間 ${esc(data.datetime || data.updatedAt.slice(0, 10))}。${esc(data.priceNote)}</small>
+      </article>`;
     } catch (error) {
       if (request !== stockLookupRequest) return;
-      $('stockLookupResult').innerHTML = `<div class="feature-empty">${esc(error.message || '海外行情讀取失敗。')} <button type="button" class="secondary-button" data-back-market-search>返回搜尋結果</button></div>`;
-      if (item.currency) { lastInternationalQuote = { ...item, market }; internationalHoldingButton.hidden = false; }
+      lastInternationalQuote = { ...item, market };
+      $('stockLookupResult').innerHTML = `<div class="feature-empty">
+        ${esc(error.message || '海外行情讀取失敗。')}
+        <div class="global-market-actions">
+          <button type="button" class="secondary-button" data-back-market-search>返回搜尋結果</button>
+          <button type="button" class="primary-button" data-add-international-holding="quote">＋ 加入持股</button>
+        </div>
+      </div>`;
     }
   }
   function setupStockLookupMarkets() {
     const form = $('stockLookupForm'), marketLabel = document.createElement('label'), market = document.createElement('select');
-    internationalHoldingButton = document.createElement('button');
-    internationalHoldingButton.type = 'button'; internationalHoldingButton.className = 'primary-button global-market-add-holding'; internationalHoldingButton.textContent = '＋ 加入總覽持股'; internationalHoldingButton.hidden = true;
-    $('stockLookupResult').after(internationalHoldingButton);
-    internationalHoldingButton.addEventListener('click', () => { if (lastInternationalQuote) openHolding(null, lastInternationalQuote); });
     market.id = 'stockLookupMarket';
     market.innerHTML = '<option value="tw">台灣（TWSE／TPEx）</option><option value="us">美國</option><option value="jp">日本</option><option value="hk">香港</option><option value="gb">英國</option><option value="de">德國</option><option value="ca">加拿大</option><option value="au">澳洲</option><option value="in">印度</option><option value="sg">新加坡</option><option value="kr">韓國</option><option value="fr">法國</option>';
     marketLabel.textContent = '選擇股票市場'; marketLabel.append(market); form.insertBefore(marketLabel, form.firstElementChild);
-    const note = document.createElement('small'); note.id = 'stockLookupMarketNote'; form.append(note);
+    const note = form.querySelector('small');
     const marketStatus = document.createElement('div'); marketStatus.id = 'stockLookupMarketStatus'; marketStatus.className = 'trend-status'; marketStatus.setAttribute('role', 'status'); marketStatus.setAttribute('aria-live', 'polite'); form.after(marketStatus);
     market.addEventListener('change', () => {
       const local = market.value === 'tw';
       stockLookupRequest += 1;
-      lastInternationalQuote = null; internationalHoldingButton.hidden = true;
+      lastInternationalQuote = null; lastInternationalSearch = null;
       $('stockLookupInput').placeholder = local ? '例如：2330、台積電、009816' : '例如：AAPL 或 Apple';
-      $('stockLookupMarketNote').textContent = local ? '行情以證交所／櫃買中心最近交易日收盤資料為準。' : '以公司代號或英文名稱搜尋；可將查到的海外股票加入總覽持倉，金額會以原幣別分開顯示。';
+      note.textContent = local ? '行情以證交所／櫃買中心最近交易日收盤資料為準。' : '用代號或英文名稱搜尋。先查看行情可帶入備用價格，也可以直接加入持股並手動填寫。';
       $('stockLookupResult').innerHTML = `<div class="feature-empty">已切換至${market.selectedOptions[0].textContent}，輸入代號或名稱開始查詢。</div>`;
     });
     void fetch('/api/markets/status', { cache: 'no-store' }).then((response) => response.json()).then((data) => {
@@ -636,6 +663,8 @@
     $('holdingMarket').value = market; $('holdingSymbol').value = source?.symbol || ''; $('holdingExchange').value = source?.exchange || ''; $('holdingMicCode').value = source?.micCode || ''; $('holdingCurrency').value = holdingCurrency(source);
     $('holdingMarketInfo').textContent = market === 'tw' ? '台灣持股 · 金額以新台幣顯示' : (marketLabels[market] || '海外') + '持股 · ' + holdingCurrency(source) + ' · 海外行情會以各自幣別計算';
     $('holdingNameHelp').textContent = market === 'tw' ? '請填 4–6 碼股票代號，才能自動比對行情。' : '已從海外個股查詢帶入市場與代號；持有股數與平均成本請自行填寫。';
+    $('avgCost').placeholder = market === 'tw' ? '850' : '每股買入成本';
+    $('currentPrice').placeholder = market === 'tw' ? '900' : '每股備用價格';
     if (item) { $('stockName').value = item.name; $('shares').value = item.shares; $('avgCost').value = item.cost; $('currentPrice').value = item.price; $('targetWeight').value = item.targetWeight || ''; }
     else if (prefill) { $('stockName').value = (prefill.symbol + ' ' + (prefill.name || '')).trim().slice(0, 80); $('currentPrice').value = prefill.price ?? ''; }
     $('holdingDialog').showModal();
@@ -659,15 +688,28 @@
   });
   $('stockLookupForm').addEventListener('submit', async (event) => {
     event.preventDefault(); const query = $('stockLookupInput').value.trim();
-    lastInternationalQuote = null; internationalHoldingButton.hidden = true;
+    lastInternationalQuote = null;
     if ($('stockLookupMarket').value !== 'tw') { await searchInternationalMarket(query); return; }
+    const request = ++stockLookupRequest;
     if (!quoteMap.size) { $('stockLookupResult').innerHTML = '<div class="feature-empty">正在更新全市場行情…</div>'; await refreshQuotes(); }
-    showStockLookup(query);
+    if (request === stockLookupRequest) showStockLookup(query);
   });
   $('stockLookupResult').addEventListener('click', (event) => {
     const international = event.target.closest('[data-international-stock]'), back = event.target.closest('[data-back-market-search]');
+    const addHolding = event.target.closest('[data-add-international-holding]');
+    if (addHolding) {
+      const selection = addHolding.dataset.addInternationalHolding;
+      const item = selection === 'quote' ? lastInternationalQuote : lastInternationalSearch?.results[Number(selection)];
+      if (item) {
+        const stock = { ...item, market: item.market || lastInternationalSearch.market };
+        const key = internationalQuoteKey(stock);
+        const existing = state.holdings.find((holding) => holdingMarket(holding) !== 'tw' && internationalQuoteKey(holding) === key);
+        openHolding(existing, { ...stock, price: stock.price ?? holdingQuote(stock)?.price });
+      }
+      return;
+    }
     if (international) { void loadInternationalQuote(lastInternationalSearch?.results?.[Number(international.dataset.internationalStock)]); return; }
-    if (back && lastInternationalSearch) { void searchInternationalMarket($('stockLookupInput').value.trim()); return; }
+    if (back && lastInternationalSearch) { renderInternationalSearch(lastInternationalSearch, lastInternationalSearch.query); return; }
     const add = event.target.closest('[data-watch-add]'), analyze = event.target.closest('[data-stock-analyze]'), fundamental = event.target.closest('[data-fundamentals]');
     if (add && !state.watchlist.includes(add.dataset.watchAdd)) { state.watchlist.push(add.dataset.watchAdd); state.watchlistGroups[add.dataset.watchAdd] = '觀察中'; persist(); renderStockWatchlist(); showStockLookup($('stockLookupInput').value); showToast('已加入「觀察中」分組。'); }
     if (analyze) openStockAnalysis(analyze.dataset.stockAnalyze);
