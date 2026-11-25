@@ -182,22 +182,22 @@ async function searchInternationalStocks(market, query) {
   globalMarketCache.set(cacheKey, { data, expiresAt: Date.now() + 5 * 60 * 1000 });
   return data;
 }
-async function internationalStockQuote(market, symbol, exchange, micCode) {
+async function internationalStockQuote(market, symbol, exchange, micCode, includeHistory = true) {
   const selected = checkInternationalMarket(market), safeSymbol = String(symbol || '').trim().toUpperCase(), safeExchange = String(exchange || '').trim(), safeMicCode = String(micCode || '').trim().toUpperCase();
   if (!/^[A-Z0-9._-]{1,30}$/.test(safeSymbol) || (safeExchange && !/^[A-Za-z0-9 ._-]{1,80}$/.test(safeExchange)) || (safeMicCode && !/^[A-Z0-9]{4}$/.test(safeMicCode)) || (!safeExchange && !safeMicCode)) throw Object.assign(new Error('股票代號或交易所格式不正確。'), { status: 400 });
-  const cacheKey = `quote:${selected.key}:${safeMicCode || safeExchange}:${safeSymbol}`, cached = globalMarketCache.get(cacheKey);
+  const cacheKey = `quote:${includeHistory ? 'history' : 'latest'}:${selected.key}:${safeMicCode || safeExchange}:${safeSymbol}`, cached = globalMarketCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
   const marketParams = { symbol: safeSymbol, country: selected.country, ...(safeMicCode ? { mic_code: safeMicCode } : { exchange: safeExchange }) };
   const [quoteResult, seriesResult] = await Promise.all([
     twelveDataRequest('quote', marketParams),
-    twelveDataRequest('time_series', { ...marketParams, interval: '1day', outputsize: '45', format: 'JSON' })
+    includeHistory ? twelveDataRequest('time_series', { ...marketParams, interval: '1day', outputsize: '45', format: 'JSON' }) : Promise.resolve({ values: [] })
   ]);
   const quote = quoteResult && typeof quoteResult === 'object' ? quoteResult : {};
   const candles = (Array.isArray(seriesResult.values) ? seriesResult.values : []).map((row) => ({ date: String(row.datetime || '').slice(0, 10), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close), volume: Number(row.volume) || 0 })).filter((row) => row.date && Number.isFinite(row.close)).reverse();
   const price = Number(quote.close || quote.price || quote.previous_close);
   if (!(price > 0 && Number.isFinite(price))) throw Object.assign(new Error('此股票目前沒有可用報價，請確認市場權限或稍後再試。'), { status: 502 });
   const data = {
-    market: selected.key, country: quote.country || selected.country, countryLabel: selected.label, symbol: String(quote.symbol || safeSymbol), name: String(quote.name || safeSymbol), exchange: String(quote.exchange || safeExchange), currency: String(quote.currency || selected.currency),
+    market: selected.key, country: quote.country || selected.country, countryLabel: selected.label, symbol: String(quote.symbol || safeSymbol), name: String(quote.name || safeSymbol), exchange: String(quote.exchange || safeExchange), micCode: safeMicCode, currency: String(quote.currency || selected.currency),
     price, open: Number(quote.open) || null, high: Number(quote.high) || null, low: Number(quote.low) || null, previousClose: Number(quote.previous_close) || null,
     change: Number(quote.change) || 0, changePercent: Number(quote.percent_change) || 0, volume: Number(quote.volume) || 0, datetime: String(quote.datetime || ''), timestamp: Number(quote.timestamp) || null,
     candles, source: 'Twelve Data', updatedAt: new Date().toISOString(), priceNote: selected.key === 'us' ? '美國即時性依帳戶資料權限與市場狀態；其他市場依方案可能為延遲或日收盤資料。' : '海外市場報價依帳戶資料權限可能延遲；請核對資料日期與交易所。'
@@ -780,7 +780,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/markets/quote') {
       if (!await authorizeMarketRequest(req, res)) return;
-      return send(res, 200, await internationalStockQuote(url.searchParams.get('market'), url.searchParams.get('symbol'), url.searchParams.get('exchange'), url.searchParams.get('micCode')));
+      return send(res, 200, await internationalStockQuote(url.searchParams.get('market'), url.searchParams.get('symbol'), url.searchParams.get('exchange'), url.searchParams.get('micCode'), url.searchParams.get('history') !== '0'));
     }
     if (url.pathname === '/api/assistant/status') return send(res, 200, {
       configured: aiProviderConfigured(AI_PROVIDER),
