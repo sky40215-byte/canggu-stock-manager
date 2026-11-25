@@ -4,7 +4,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { topupApiResult } from '../frontend/portfolio-math.js';
-import { holdingVisionModel, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength } from './holding-vision.mjs';
+import { holdingVisionModels, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength } from './holding-vision.mjs';
 
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
@@ -30,6 +30,7 @@ const FUGLE_API_KEY = process.env.FUGLE_API_KEY || '';
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || '';
 const FINMIND_TOKEN = process.env.FINMIND_TOKEN || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma4:e2b';
@@ -692,24 +693,36 @@ async function scanHoldingImage(req, res) {
     user = await requireAuthenticatedUser(req, res);
     if (!user) return;
   }
-  if (!aiProviderConfigured('gemini')) return send(res, 503, { error: 'Gemini 整圖辨識尚未設定。' });
   const body = await readJsonBody(req, maxHoldingImageLength + 1024);
-  if (body?.aiConsent !== true) return send(res, 400, { error: '請先同意將圖片送至 Google Gemini。' });
+  const provider = body?.provider === undefined ? 'gemini' : body.provider;
+  if (provider !== 'gemini' && provider !== 'openai') return send(res, 400, { error: '請選擇可用的整圖辨識服務。' });
+  const label = provider === 'openai' ? 'OpenAI' : 'Gemini';
+  if (!(provider === 'openai' ? OPENAI_API_KEY : GEMINI_API_KEY)) return send(res, 503, { error: `${label} 整圖辨識尚未設定。` });
+  if (body?.aiConsent !== true) return send(res, 400, { error: `請先同意將圖片送至 ${label}。` });
   if (!isHoldingJpeg(body.image)) return send(res, 400, { error: '圖片資料有誤或過大，請重新選擇。' });
   const identity = user?.id || req.socket.remoteAddress || 'local';
   if (!checkAssistantRateLimit(`holding-image:${identity}`)) return send(res, 429, { error: '整圖辨識每小時最多 20 次，請稍後再試。' });
   let response;
   try {
-    response = await postGemini(holdingVisionModel, holdingVisionRequest(body.image), 60000);
+    const request = holdingVisionRequest(provider, body.image);
+    response = provider === 'openai'
+      ? await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST', signal: AbortSignal.timeout(60000),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+        body: request
+      })
+      : await postGemini(holdingVisionModels.gemini, request, 60000);
   } catch {
-    return send(res, 503, { error: '暫時無法連線到 Gemini，請稍後再試。' });
+    return send(res, 503, { error: `暫時無法連線到 ${label}，請稍後再試。` });
   }
   if (!response.ok) {
-    if (response.status === 429) return send(res, 429, { error: 'Gemini 配額或請求頻率暫時達到上限。' });
-    if (response.status >= 500) return send(res, 503, { error: 'Gemini 目前忙碌，請稍後再試。' });
-    return send(res, 502, { error: 'Gemini 暫時無法辨識這張圖，請檢查服務設定或稍後重試。' });
+    if (response.status === 429) return send(res, 429, { error: `${label} 配額或請求頻率暫時達到上限。` });
+    if (response.status >= 500) return send(res, 503, { error: `${label} 目前忙碌，請稍後再試。` });
+    if ([401, 403, 404].includes(response.status)) return send(res, 502, { error: `${label} 無法驗證金鑰或使用指定模型，請聯絡網站管理者。` });
+    return send(res, 502, { error: `${label} 暫時無法辨識這張圖，請檢查服務設定或稍後重試。` });
   }
-  return send(res, 200, { model: holdingVisionModel, rows: holdingVisionRows(await response.json()) });
+  const result = await response.json().catch(() => null);
+  return send(res, 200, { model: holdingVisionModels[provider], rows: holdingVisionRows(provider, result) });
 }
 async function askAssistant(messages, topic, marketContext = '', provider = AI_PROVIDER, outputFormat = 'text') {
   const startedAt = Date.now();
@@ -853,7 +866,14 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, await internationalStockQuote(url.searchParams.get('market'), url.searchParams.get('symbol'), url.searchParams.get('exchange'), url.searchParams.get('micCode'), url.searchParams.get('history') !== '0'));
     }
     if (url.pathname === '/api/holdings/image') {
-      if (req.method === 'GET') return send(res, 200, { configured: aiProviderConfigured('gemini'), model: holdingVisionModel });
+      if (req.method === 'GET') return send(res, 200, {
+        configured: Boolean(GEMINI_API_KEY),
+        model: holdingVisionModels.gemini,
+        providers: {
+          openai: { configured: Boolean(OPENAI_API_KEY), model: holdingVisionModels.openai },
+          gemini: { configured: Boolean(GEMINI_API_KEY), model: holdingVisionModels.gemini }
+        }
+      });
       if (req.method === 'POST') return await scanHoldingImage(req, res);
       return send(res, 405, { error: '不支援此操作。' });
     }

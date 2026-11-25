@@ -1,4 +1,4 @@
-export const holdingVisionModel = 'gemini-3.8-flash';
+export const holdingVisionModels = { gemini: 'gemini-3.8-flash', openai: 'gpt-6.1-terra' };
 export const maxHoldingImageLength = 4 * Math.ceil((4 * 1024 * 1024) / 3);
 
 const rowLimit = 50;
@@ -22,6 +22,22 @@ const rowFields = {
   lastPrice: { type: 'string' }
 };
 
+function holdingSchema(strict) {
+  const objectRules = strict ? { additionalProperties: false } : {};
+  return {
+    type: 'object',
+    properties: {
+      rows: {
+        type: 'array', maxItems: rowLimit, items: {
+          type: 'object', properties: rowFields, required: Object.keys(rowFields), ...objectRules
+        }
+      }
+    },
+    required: ['rows'],
+    ...objectRules
+  };
+}
+
 export function isHoldingJpeg(value) {
   if (typeof value !== 'string' || value.length < 8 || value.length > maxHoldingImageLength ||
       value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
@@ -30,7 +46,21 @@ export function isHoldingJpeg(value) {
     bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 && bytes.at(-2) === 255 && bytes.at(-1) === 217;
 }
 
-export function holdingVisionRequest(image) {
+export function holdingVisionRequest(provider, image) {
+  if (provider === 'openai') {
+    return JSON.stringify({
+      model: holdingVisionModels.openai,
+      store: false,
+      instructions: prompt,
+      input: [{ role: 'user', content: [
+        { type: 'input_text', text: '擷取這張圖中的台股持股。' },
+        { type: 'input_image', image_url: 'data:image/jpeg;base64,' + image, detail: 'high' }
+      ] }],
+      reasoning: { effort: 'low' },
+      max_output_tokens: 10000,
+      text: { format: { type: 'json_schema', name: 'holding_inventory', strict: true, schema: holdingSchema(true) } }
+    });
+  }
   return JSON.stringify({
     contents: [{ role: 'user', parts: [
       { text: prompt },
@@ -40,15 +70,7 @@ export function holdingVisionRequest(image) {
       maxOutputTokens: 10000,
       thinkingConfig: { thinkingLevel: 'LOW' },
       responseMimeType: 'application/json',
-      responseJsonSchema: {
-        type: 'object',
-        properties: {
-          rows: { type: 'array', maxItems: rowLimit, items: {
-            type: 'object', properties: rowFields, required: Object.keys(rowFields)
-          } }
-        },
-        required: ['rows']
-      }
+      responseJsonSchema: holdingSchema(false)
     }
   });
 }
@@ -62,12 +84,21 @@ function amount(value) {
   return Number.isFinite(numeric) && numeric <= Number.MAX_SAFE_INTEGER ? String(numeric) : '';
 }
 
-export function holdingVisionRows(data) {
-  const parts = data?.candidates?.[0]?.content?.parts;
-  const output = Array.isArray(parts) ? parts.filter((part) => !part?.thought).map((part) => part?.text || '').join('') : '';
+export function holdingVisionRows(provider, data) {
+  const label = provider === 'openai' ? 'OpenAI' : 'Gemini';
+  let parts = [];
+  if (provider === 'openai') {
+    if (data?.status === 'completed' && Array.isArray(data.output)) {
+      parts = data.output.flatMap((item) => item?.type === 'message' && Array.isArray(item.content) ? item.content : [])
+        .filter((part) => part?.type === 'output_text');
+    }
+  } else {
+    const candidate = data?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(candidate)) parts = candidate.filter((part) => !part?.thought);
+  }
   let rows;
-  try { rows = JSON.parse(output).rows; } catch { /* Unexpected model output. */ }
-  if (!Array.isArray(rows)) throw Object.assign(new Error('Gemini 未能整理出可核對的持股資料，請再試一次。'), { status: 502 });
+  try { rows = JSON.parse(parts.map((part) => part?.text || '').join('')).rows; } catch { /* Unexpected model output. */ }
+  if (!Array.isArray(rows)) throw Object.assign(new Error(label + ' 未能整理出可核對的持股資料，請再試一次。'), { status: 502 });
   return rows.slice(0, rowLimit).flatMap((row) => {
     const printedCode = text(row?.code);
     const code = /^\d{4,6}$/.test(printedCode) ? printedCode : '';

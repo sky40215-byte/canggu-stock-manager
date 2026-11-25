@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261125g">
+  <link rel="stylesheet" href="styles.css?v=20261126a">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
@@ -142,9 +142,15 @@
         <small id="holdingImportFileName">PNG、JPG 或 WebP，上限 12 MB。預設在此裝置進行文字辨識。</small>
       </div>
       <section id="holdingImportCloud" class="holding-import-cloud" aria-labelledby="holdingImportCloudTitle" hidden>
-        <div><h3 id="holdingImportCloudTitle">Gemini 3.8 Flash 整圖辨識</h3><p>卡片、表格或沒有欄位標題的截圖都可掃描。辨識成功會更新下方預覽。</p></div>
-        <label><input id="holdingImportConsent" type="checkbox"> 我同意將這張整圖傳送給 Google Gemini。若有帳號或姓名，請先遮蔽。</label>
-        <button id="holdingImportGemini" class="secondary-button" type="button" disabled>用 Gemini 掃描整張圖</button>
+        <div><h3 id="holdingImportCloudTitle">整圖辨識</h3><p>卡片、表格或沒有欄位標題的截圖都可掃描。辨識成功會更新下方預覽。</p><p id="holdingImportCloudHint" hidden></p></div>
+        <label class="holding-import-provider">辨識服務
+          <select id="holdingImportProvider">
+            <option value="openai" data-label="OpenAI · GPT‑6.1 Terra">OpenAI · GPT‑6.1 Terra</option>
+            <option value="gemini" data-label="Google · Gemini 3.8 Flash">Google · Gemini 3.8 Flash</option>
+          </select>
+        </label>
+        <label class="holding-import-consent"><input id="holdingImportConsent" type="checkbox"> <span id="holdingImportConsentText">我同意將這張圖片傳給所選服務。若有帳號或姓名，請先遮蔽。</span></label>
+        <button id="holdingImportScan" class="secondary-button" type="button" disabled>掃描整張圖</button>
       </section>
       <p class="holding-import-status" id="holdingImportStatus" role="status" hidden></p>
       <div class="holding-import-review" id="holdingImportReview" hidden>
@@ -178,6 +184,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261125g"></script>
+  <script type="module" src="app.js?v=20261126a"></script>
 </body>
 </html>

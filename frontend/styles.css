@@ -327,7 +327,7 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
 }
 .holding-import-cloud h3 { margin: 0; font-size: 14px; }
 .holding-import-cloud p { margin: 4px 0 0; color: #536a73; }
-.holding-import-cloud label {
+.holding-import-consent {
   grid-column: 1;
   display: flex;
   align-items: flex-start;
@@ -336,7 +336,7 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
   font-size: 12px;
   line-height: 1.5;
 }
-.holding-import-cloud label input[type="checkbox"] {
+.holding-import-consent input[type="checkbox"] {
   flex: none;
   width: 15px;
   height: 15px;
@@ -344,7 +344,9 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
   margin: 2px 0 0;
   padding: 0;
 }
-.holding-import-cloud button { grid-column: 2; grid-row: 1 / span 2; }
+.holding-import-cloud label.holding-import-provider { grid-column: 2; grid-row: 1; margin: 0; }
+.holding-import-provider select { margin-top: 4px; }
+.holding-import-cloud button { grid-column: 2; grid-row: 2; justify-self: end; }
 .holding-import-upload small,
 .holding-import-grid > small {
   color: #536a73;
@@ -436,6 +438,7 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
 @media (max-width: 760px) {
   .holding-import-modal.modal form { padding: 15px; }
   .holding-import-cloud:not([hidden]) { grid-template-columns: 1fr; }
+  .holding-import-cloud label.holding-import-provider,
   .holding-import-cloud button { grid-column: 1; grid-row: auto; justify-self: start; }
   .holding-import-review { grid-template-columns: 1fr; gap: 12px; }
   .holding-import-picture { max-height: 30vh; }

@@ -3,6 +3,7 @@ import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTab
 const allowedImages = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const maxFileBytes = 12 * 1024 * 1024;
 const maxCloudImageLength = 4 * Math.ceil((4 * 1024 * 1024) / 3);
+const providerLabels = { openai: 'OpenAI', gemini: 'Gemini' };
 const fields = [
   { key: 'code', label: '代號', attributes: 'inputmode="numeric" maxlength="6" autocomplete="off"' },
   { key: 'name', label: '名稱', attributes: 'maxlength="60" autocomplete="off"' },
@@ -24,7 +25,7 @@ function normalizedImage(image) {
   return canvas;
 }
 
-function jpegForGemini(image) {
+function cloudJpeg(image) {
   const canvas = normalizedImage(image);
   for (const quality of [.95, .85, .75]) {
     const encoded = canvas.toDataURL('image/jpeg', quality).slice('data:image/jpeg;base64,'.length);
@@ -73,22 +74,32 @@ async function scanImage(canvas, signal, report) {
   }
 }
 
-export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, requestGemini, escape }) {
+export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, requestCloudScan, escape }) {
   const byId = (id) => document.getElementById('holdingImport' + id);
   const dialog = byId('Dialog'), form = byId('Form'), file = byId('File'), review = byId('Review');
   const image = byId('Image'), zoom = byId('Zoom'), body = byId('Rows'), status = byId('Status');
   const submit = byId('Submit'), count = byId('Count'), addRow = byId('AddRow');
-  const cloud = byId('Cloud'), consent = byId('Consent'), gemini = byId('Gemini'), grid = byId('Grid');
-  let imageUrl = '', imageReady = false, scan = null, cloudBusy = false, geminiConfigured = false, drafts = [];
+  const cloud = byId('Cloud'), provider = byId('Provider'), consent = byId('Consent'), consentText = byId('ConsentText');
+  const scanButton = byId('Scan'), cloudHint = byId('CloudHint'), grid = byId('Grid');
+  let imageUrl = '', imageReady = false, scan = null, cloudBusy = false, available = null, drafts = [];
 
   function setStatus(message) {
     status.textContent = message;
     status.hidden = !message;
   }
   function refreshScanControls() {
-    cloud.hidden = !imageReady || !geminiConfigured;
-    consent.disabled = cloudBusy;
-    gemini.disabled = !imageReady || !geminiConfigured || !consent.checked || cloudBusy;
+    const service = provider.value;
+    const ready = Boolean(available?.[service]);
+    cloud.hidden = !imageReady;
+    provider.disabled = cloudBusy || !Object.values(available || {}).some(Boolean);
+    consent.disabled = cloudBusy || !ready;
+    scanButton.disabled = !imageReady || !ready || !consent.checked || cloudBusy;
+    scanButton.textContent = ready ? `用 ${providerLabels[service]} 掃描整張圖` : '掃描整張圖';
+    const recipient = ready ? (service === 'gemini' ? 'Google Gemini' : 'OpenAI') : '所選服務';
+    consentText.textContent = `我同意將這張圖片傳給 ${recipient}。若有帳號或姓名，請先遮蔽。`;
+    cloudHint.hidden = available?.openai === true;
+    cloudHint.textContent = available === null ? '正在確認雲端辨識服務…'
+      : available.openai === false ? 'OpenAI 尚未設定 API 金鑰。' : '暫時無法確認雲端辨識服務。';
     grid.inert = cloudBusy;
   }
 
@@ -174,11 +185,22 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
   }
 
   document.getElementById('openHoldingImport').addEventListener('click', () => {
+    available = null;
     reset();
     dialog.showModal();
     fetch('/api/holdings/image', { cache: 'no-store' }).then(async (response) => {
-      geminiConfigured = response.ok && (await response.json()).configured === true;
-    }).catch(() => { geminiConfigured = false; }).finally(refreshScanControls);
+      if (!response.ok) throw new Error('Cloud scan status unavailable');
+      const config = await response.json();
+      available = { openai: config.providers?.openai?.configured === true, gemini: (config.providers?.gemini?.configured ?? config.configured) === true };
+    }).catch(() => { available = {}; }).finally(() => {
+      for (const option of provider.options) {
+        option.disabled = !available[option.value];
+        option.textContent = option.disabled ? option.dataset.label + '（未設定）' : option.dataset.label;
+      }
+      provider.value = available.openai || !available.gemini ? 'openai' : 'gemini';
+      consent.checked = false;
+      refreshScanControls();
+    });
   });
   dialog.addEventListener('close', () => { if (!dialog.open) reset(); });
   byId('Choose').addEventListener('click', () => file.click());
@@ -245,24 +267,29 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
   });
 
   consent.addEventListener('change', refreshScanControls);
-  gemini.addEventListener('click', async () => {
-    if (!dialog.open || gemini.disabled) return;
+  provider.addEventListener('change', () => {
+    consent.checked = false;
+    refreshScanControls();
+  });
+  scanButton.addEventListener('click', async () => {
+    if (!dialog.open || scanButton.disabled) return;
+    const service = provider.value, label = providerLabels[service];
     scan?.abort();
     const controller = new AbortController();
     scan = controller;
     cloudBusy = true;
     refreshScanControls();
     refreshReview();
-    setStatus('Gemini 正在掃描整張圖並找出持股…');
+    setStatus(`${label} 正在掃描整張圖並找出持股…`);
     try {
-      const rows = await requestGemini(jpegForGemini(image), controller.signal);
+      const rows = await requestCloudScan(service, cloudJpeg(image), controller.signal);
       if (!dialog.open || controller.signal.aborted) return;
       if (rows.length) {
         showCandidates(rows);
-        setStatus(`Gemini 找到 ${rows.length} 筆候選持股。請核對原圖再匯入。${rows.length === maxImageHoldings ? ' 單張圖片最多回傳 50 筆。' : ''}`);
+        setStatus(`${label} 找到 ${rows.length} 筆候選持股。請核對原圖再匯入。${rows.length === maxImageHoldings ? ' 單張圖片最多回傳 50 筆。' : ''}`);
       } else {
         if (!drafts.length) showCandidates([]);
-        setStatus('Gemini 找不到可確認的台股持股。你可以保留目前預覽，或換張較清楚的圖片。');
+        setStatus(`${label} 找不到可確認的台股持股。你可以保留目前預覽，或換張較清楚的圖片。`);
       }
       consent.checked = false;
     } catch (error) {
