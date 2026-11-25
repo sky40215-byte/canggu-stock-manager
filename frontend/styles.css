@@ -289,3 +289,147 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
   .sidebar[data-mobile-open] nav{display:block;max-height:min(50vh,320px);margin-top:10px}
   .sidebar[data-mobile-open] {max-height:none}
 }
+
+.holding-import-modal.modal {
+  width: min(1150px, calc(100% - 28px));
+  max-height: calc(100dvh - 28px);
+  overscroll-behavior: contain;
+}
+.holding-import-modal .modal-heading p {
+  max-width: 570px;
+  margin: 5px 0 0;
+  color: #536a73;
+  line-height: 1.55;
+}
+.holding-import-upload,
+.holding-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.holding-import-upload {
+  padding: 12px;
+  background: #eef5f4;
+  border-radius: 8px;
+}
+.holding-import-upload input[hidden] { display: none; }
+.holding-import-upload small,
+.holding-import-grid > small {
+  color: #536a73;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.holding-import-status {
+  padding: 10px 0 0;
+  margin: 0;
+  line-height: 1.55;
+}
+.holding-import-review {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(0, 2.5fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 14px;
+}
+.holding-import-review[hidden],
+.holding-import-row-note[hidden] { display: none; }
+.holding-import-review figure {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+}
+.holding-import-review figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-weight: 600;
+}
+.holding-import-review figcaption button { color: var(--green-dark); font-size: 12px; }
+.holding-import-picture {
+  overflow: auto;
+  max-height: 52vh;
+  border: 1px solid #dfe8e8;
+  border-radius: 8px;
+  background: #f3f6f6;
+}
+.holding-import-picture img { display: block; width: 100%; }
+.holding-import-grid {
+  display: grid;
+  justify-items: start;
+  min-width: 0;
+  gap: 8px;
+}
+.holding-import-table {
+  width: 100%;
+  max-height: 52vh;
+  overflow: auto;
+  border: 1px solid #dfe8e8;
+  border-radius: 8px;
+}
+.holding-import-table table { width: 100%; min-width: 515px; table-layout: fixed; }
+.holding-import-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 5px;
+  text-align: left;
+  color: #536a73;
+  font-size: 12px;
+}
+.holding-import-table th:nth-child(2),
+.holding-import-table th:last-child { width: 21%; }
+.holding-import-table td { padding: 5px; text-align: left; }
+.holding-import-table :is(input, select) {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 5px;
+  border: 1px solid #ccd9dd;
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--card, #fff);
+  font: inherit;
+  font-size: 13px;
+}
+.holding-import-table .holding-import-needs-review { background: #fff5e4; }
+.holding-import-table .holding-import-row-note td {
+  padding: 3px 6px 8px;
+  color: #536a73;
+  font-size: 12px;
+  white-space: normal;
+}
+.holding-import-actions span { margin-right: auto; }
+.holdings-card .heading-actions { flex-wrap: wrap; }
+
+@media (max-width: 760px) {
+  .holding-import-modal.modal form { padding: 15px; }
+  .holding-import-review { grid-template-columns: 1fr; gap: 12px; }
+  .holding-import-picture { max-height: 30vh; }
+  .holding-import-table { max-height: none; }
+  .holding-import-table table, .holding-import-table tbody { display: block; min-width: 0; }
+  .holding-import-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .holding-import-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .holding-import-table tr[data-index] { padding: 6px; border-top: 1px solid #dfe8e8; }
+  .holding-import-table tr[data-index]:first-child { border-top: 0; }
+  .holding-import-table tr.holding-import-row-note { display: block; }
+  .holding-import-table tr.holding-import-row-note[hidden] { display: none; }
+  .holding-import-table td { display: block; border: 0; }
+  .holding-import-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: #536a73;
+    font-size: 12px;
+  }
+}

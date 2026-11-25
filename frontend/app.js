@@ -2,6 +2,7 @@ import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.j
 import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
+import { mountHoldingImport } from './holding-import-dialog.js?v=20261125f';
 
 (() => {
   'use strict';
@@ -847,6 +848,33 @@ import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
     $('priceDialog').showModal();
   }
   ['addHolding','emptyAdd'].forEach((id) => $(id).addEventListener('click', () => openHolding()));
+  mountHoldingImport({
+    getHoldings: () => state.holdings,
+    getQuotes: () => quoteMap,
+    escape: esc,
+    saveHoldings: (rows) => {
+      if ($('appShell').hidden || (supabaseClient && !cloudReady)) return false;
+      const replacements = new Map(), additions = [];
+      const updated = new Date().toLocaleDateString('zh-TW');
+      for (const { action, existing, code, name, shares, cost, price, quote } of rows) {
+        const prior = action === 'update' ? existing[0] : null;
+        const fallbackPrice = Number(prior?.price) > 0 ? Number(prior.price) : Number(quote?.price) || 0;
+        const position = { shares, cost, price: price ?? fallbackPrice, updated };
+        if (prior) replacements.set(prior, { ...prior, ...position });
+        else additions.push({
+          id: crypto.randomUUID(), market: 'tw', currency: 'TWD', symbol: code, exchange: '', micCode: '',
+          name: `${code} ${name}`.slice(0, 80), targetWeight: 0, ...position
+        });
+      }
+      state.holdings = state.holdings.map((holding) => replacements.get(holding) || holding).concat(additions);
+      $('overviewMarketFilter').value = 'tw';
+      persist();
+      render();
+      showToast(`已新增 ${additions.length} 筆、更新 ${replacements.size} 筆持股。`);
+      if (!quoteMap.size) void refreshQuotes();
+      return true;
+    }
+  });
   $('addHoldingTop').addEventListener('click', () => {
     const market = $('overviewMarketFilter').value;
     if (market === 'tw') openHolding();

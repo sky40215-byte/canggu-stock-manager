@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261125d">
+  <link rel="stylesheet" href="styles.css?v=20261125f">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
@@ -84,7 +84,7 @@
       <section id="stockDesk" class="content-card feature-card stock-desk-card"><div class="section-heading"><div><div class="eyebrow">STOCK LOOKUP & WATCHLIST</div><h2>個股查詢與自選觀察</h2><p class="news-intro">查詢上市、上櫃股票與 ETF 最近交易日行情，將想追蹤的標的加入自選清單。</p></div><span id="stockDeskQuoteDate" class="source-count">更新行情後可查詢</span></div><form id="stockLookupForm" class="stock-lookup-form"><label for="stockLookupInput">輸入股票代號或名稱</label><div><input id="stockLookupInput" maxlength="30" placeholder="例如：2330、台積電、009816" autocomplete="off" required><button class="primary-button" type="submit">查詢個股</button></div><small>行情以證交所／櫃買中心最近交易日收盤資料為準。</small></form><div id="stockLookupResult" class="stock-lookup-result" aria-live="polite"><div class="feature-empty">輸入代號或名稱開始查詢。</div></div><div class="watchlist-divider"><span>我的待觀察股票</span><span id="watchlistCount" class="count-badge">0 檔</span></div><div class="watchlist-tools"><label for="watchlistGroupFilter">顯示分組</label><select id="watchlistGroupFilter"><option value="all">全部股票</option><option>觀察中</option><option>準備買進</option><option>長期追蹤</option></select><label for="watchlistSort">排序</label><select id="watchlistSort"><option value="original">加入順序</option><option value="gain">漲跌幅由高至低</option><option value="loss">漲跌幅由低至高</option><option value="code">依代號</option></select></div><div id="stockWatchlist" class="stock-watchlist"></div><div class="insight-disclaimer"><span class="info-dot">i</span> 行情更新時會一併更新自選股；趨勢分析會查 Fugle 日 K，需先設定 API 金鑰。</div></section>
 
       <section id="holdings" class="content-card holdings-card">
-        <div class="section-heading"><div><div class="eyebrow">YOUR PORTFOLIO</div><h2>我的持股 <span class="count-badge" id="holdingCount">0</span></h2></div><div class="heading-actions"><button class="secondary-button" id="addHolding">＋ 新增股票</button></div></div>
+        <div class="section-heading"><div><div class="eyebrow">YOUR PORTFOLIO</div><h2>我的持股 <span class="count-badge" id="holdingCount">0</span></h2></div><div class="heading-actions"><button class="secondary-button" id="openHoldingImport" type="button">從截圖匯入</button><button class="secondary-button" id="addHolding" type="button">＋ 新增股票</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>股票</th><th>持有股數</th><th>平均成本</th><th>最新價格</th><th>市值</th><th>未實現損益</th><th>目標比例</th><th></th></tr></thead><tbody id="holdingsBody"></tbody></table><div id="emptyHoldings" class="empty-state"><div class="empty-illustration">▤</div><b>你的投資清單從這裡開始</b><p>新增持股與價格，掌握成本和損益概況。</p><button class="secondary-button" id="emptyAdd">＋ 新增第一筆持股</button></div></div>
         <div class="table-footnote"><span class="info-dot">i</span> 市值與損益為估算值；交易紀錄會扣手續費、交易稅，股利另行累計。</div>
       </section>
@@ -130,6 +130,41 @@
 
   <dialog id="priceDialog" class="modal"><form id="priceForm" method="dialog"><div class="modal-heading"><div><div class="eyebrow">PRICE JOURNAL</div><h2>新增價格觀察</h2></div><button type="button" class="close-button" data-close="priceDialog" aria-label="關閉">×</button></div><label>股票<input id="priceStock" required list="stockOptions" placeholder="輸入或選擇持股"><datalist id="stockOptions"></datalist></label><div class="form-row"><label>觀察日期<input id="priceDate" required type="date"></label><label>收盤／觀察價格<input id="observedPrice" required type="number" min="0" step="any" placeholder="900"></label></div><label>備註（選填）<input id="priceNote" maxlength="120" placeholder="例如：法說會後觀察"></label><div class="modal-actions"><button type="button" class="secondary-button" data-close="priceDialog">取消</button><button type="submit" class="primary-button">新增觀察</button></div></form></dialog>
   <section id="accountGate" class="account-gate" hidden><div class="account-card"><div class="brand-mark">端</div><div class="eyebrow">PRIVATE PORTFOLIO SYNC</div><h1>登入以同步你的資料</h1><p>使用同一個帳號，即可在電腦與手機查看相同的持股、交易和自選清單。</p><form id="accountForm"><label>電子郵件<input id="accountEmail" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>密碼<input id="accountPassword" type="password" minlength="8" autocomplete="current-password" required placeholder="至少 8 個字元"></label><button id="accountSubmit" class="primary-button" type="submit">登入</button></form><button id="accountModeToggle" class="text-button account-mode-toggle" type="button">還沒有帳號？建立帳號</button><a class="account-demo-link" href="/demo.html">免登入體驗競賽示範 ↗</a><div id="accountStatus" class="account-status" role="status" aria-live="polite">資料同步設定載入中…</div><small>每個帳號只能讀取自己的資料。請記住登入密碼，並定期匯出加密備份。</small></div></section>
+  <dialog id="holdingImportDialog" class="modal holding-import-modal" aria-labelledby="holdingImportTitle">
+    <form id="holdingImportForm" method="dialog" novalidate>
+      <div class="modal-heading">
+        <div><h2 id="holdingImportTitle">從截圖匯入持股</h2><p>選擇含欄位標題的台股券商庫存截圖。請核對股數和每股平均成本，再匯入「我的持股」。</p></div>
+        <button type="button" class="close-button" data-close="holdingImportDialog" aria-label="關閉截圖匯入">×</button>
+      </div>
+      <div class="holding-import-upload">
+        <input id="holdingImportFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <button class="secondary-button" id="holdingImportChoose" type="button" autofocus>選擇截圖</button>
+        <small id="holdingImportFileName">PNG、JPG 或 WebP，上限 12 MB。影像在此裝置辨識。</small>
+      </div>
+      <p class="holding-import-status" id="holdingImportStatus" role="status" hidden></p>
+      <div class="holding-import-review" id="holdingImportReview" hidden>
+        <figure>
+          <figcaption>原始截圖 <button id="holdingImportZoom" class="text-button" type="button" aria-pressed="false">放大截圖</button></figcaption>
+          <div class="holding-import-picture"><img id="holdingImportImage" alt="待核對的持股截圖"></div>
+        </figure>
+        <div class="holding-import-grid">
+          <div class="holding-import-table">
+            <table aria-label="核對匯入持股">
+              <thead><tr><th scope="col">代號</th><th scope="col">名稱</th><th scope="col">股數</th><th scope="col">均價／股</th><th scope="col">備用價</th><th scope="col">處理方式</th></tr></thead>
+              <tbody id="holdingImportRows"></tbody>
+            </table>
+          </div>
+          <button class="secondary-button" id="holdingImportAddRow" type="button">＋ 補一筆</button>
+          <small>金額以新台幣為單位。備用價可留空，有收盤行情時會優先使用行情。</small>
+        </div>
+      </div>
+      <div class="modal-actions holding-import-actions">
+        <span id="holdingImportCount" role="status"></span>
+        <button type="button" class="secondary-button" data-close="holdingImportDialog">取消</button>
+        <button type="submit" class="primary-button" id="holdingImportSubmit" disabled>確認匯入</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="quickSearchDialog" class="modal quick-search-modal" aria-labelledby="quickSearchTitle">
     <div class="modal-heading"><div><h2 id="quickSearchTitle">快速查找</h2><p>查找功能、已追蹤股票或持股。</p></div><button type="button" class="close-button" data-close="quickSearchDialog" aria-label="關閉快速查找">×</button></div>
     <label class="sr-only" for="quickSearchInput">輸入功能名稱、股票代號或名稱</label>
@@ -138,6 +173,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261125d"></script>
+  <script type="module" src="app.js?v=20261125f"></script>
 </body>
 </html>

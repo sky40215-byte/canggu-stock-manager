@@ -8,6 +8,14 @@ import { topupApiResult } from '../frontend/portfolio-math.js';
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const PROJECT_ROOT = resolve(BACKEND_ROOT, '..');
 const FRONTEND_ROOT = resolve(PROJECT_ROOT, 'frontend');
+const OCR_ASSETS = new Map([
+  ['tesseract.esm.min.js', 'tesseract.js/dist/tesseract.esm.min.js'],
+  ['worker.min.js', 'tesseract.js/dist/worker.min.js'],
+  ...['tesseract-core-lstm', 'tesseract-core-simd-lstm', 'tesseract-core-relaxedsimd-lstm'].map((name) => [
+    `${name}.wasm.js`, `tesseract.js-core/${name}.wasm.js`
+  ]),
+  ['chi_tra.traineddata.gz', '@tesseract.js-data/chi_tra/4.0.0_best_int/chi_tra.traineddata.gz']
+]);
 const LOCAL_CONFIG_PATH = process.env.CANGGU_CONFIG_PATH || resolve(process.env.LOCALAPPDATA || PROJECT_ROOT, 'Canggu', 'config.env');
 try {
   const localEnv = await readFile(LOCAL_CONFIG_PATH, 'utf8');
@@ -1080,6 +1088,17 @@ const server = http.createServer(async (req, res) => {
       };
       research.taiwan = taiwan;
       return send(res, 200, { research, impactAnalysis, provider });
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/vendor/ocr/v7/')) {
+      const asset = OCR_ASSETS.get(url.pathname.slice('/vendor/ocr/v7/'.length));
+      if (!asset) return send(res, 404, { error: '找不到辨識元件。' });
+      const body = await readFile(resolve(PROJECT_ROOT, 'node_modules', asset));
+      res.writeHead(200, {
+        'Content-Type': asset.endsWith('.js') ? MIME['.js'] : 'application/gzip',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      return res.end(body);
     }
     const requested = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = resolve(FRONTEND_ROOT, `.${requested}`);

@@ -1,9 +1,11 @@
-const CACHE_NAME = 'canggu-app-shell-v16';
+const CACHE_NAME = 'canggu-app-shell-v17';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/styles.css?v=20261125d',
-  '/app.js?v=20261125d',
+  '/styles.css?v=20261125f',
+  '/app.js?v=20261125f',
+  '/holding-import-dialog.js?v=20261125f',
+  '/holding-image-import.js?v=20261125f',
   '/portfolio-math.js?v=20261125d',
   '/scenario-compare.js?v=20261125d',
   '/portfolio-stress.js?v=20261125d',
@@ -27,7 +29,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
-  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
+  if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/vendor/ocr/')) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then((response) => {
