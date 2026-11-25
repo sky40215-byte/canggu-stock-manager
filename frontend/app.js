@@ -258,6 +258,56 @@
     if (!matches.length) { $('stockLookupResult').innerHTML = `<div class="feature-empty">找不到「${esc(query)}」的行情，請確認代號或名稱，或先更新行情。</div>`; return; }
     $('stockLookupResult').innerHTML = matches.map(renderStockQuote).join('');
   }
+  let lastInternationalSearch = null;
+  async function internationalMarketFetch(url) {
+    const { data, error } = await supabaseClient?.auth.getSession() || {};
+    if (supabaseClient && (error || !data?.session?.access_token)) throw new Error('登入狀態已失效，請重新登入後查詢海外行情。');
+    const headers = data?.session?.access_token ? { Authorization: `Bearer ${data.session.access_token}` } : {};
+    return fetch(url, { cache: 'no-store', headers });
+  }
+  async function searchInternationalMarket(query) {
+    const market = $('stockLookupMarket').value;
+    $('stockLookupResult').innerHTML = '<div class="feature-empty">正在搜尋海外市場股票…</div>';
+    try {
+      const response = await internationalMarketFetch(`/api/markets/search?market=${encodeURIComponent(market)}&q=${encodeURIComponent(query)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '海外股票搜尋失敗。');
+      lastInternationalSearch = data;
+      $('stockLookupResult').innerHTML = data.results.length ? `<div class="global-market-search-list">${data.results.map((item, index) => `<article><div><b>${esc(item.symbol)} · ${esc(item.name)}</b><small>${esc(item.exchange)} · ${esc(item.country)} · ${esc(item.currency)}${item.access ? ` · 資料權限 ${esc(item.access)}` : ''}</small></div><button type="button" class="secondary-button" data-international-stock="${index}">查看行情</button></article>`).join('')}</div>` : `<div class="feature-empty">在${esc(data.label)}市場找不到「${esc(query)}」，可試公司英文名稱或代號。</div>`;
+    } catch (error) { $('stockLookupResult').innerHTML = `<div class="feature-empty">${esc(error.message || '海外股票搜尋失敗。')}</div>`; }
+  }
+  async function loadInternationalQuote(item) {
+    if (!item) return;
+    $('stockLookupResult').innerHTML = '<div class="feature-empty">正在讀取海外報價與日線資料…</div>';
+    try {
+      const params = new URLSearchParams({ market: lastInternationalSearch.market, symbol: item.symbol, exchange: item.exchange, micCode: item.micCode || '' });
+      const response = await internationalMarketFetch(`/api/markets/quote?${params}`), data = await response.json();
+      if (!response.ok) throw new Error(data.error || '海外行情讀取失敗。');
+      const formatter = new Intl.NumberFormat('zh-TW', { style: 'currency', currency: data.currency, maximumFractionDigits: data.currency === 'JPY' ? 0 : 2 });
+      const closes = data.candles.map((row) => Number(row.close)).filter((value) => Number.isFinite(value));
+      const min = Math.min(...closes), max = Math.max(...closes), span = max - min || 1;
+      const points = data.candles.map((row, index) => `${(index / Math.max(1, data.candles.length - 1) * 360).toFixed(1)},${(70 - (Number(row.close) - min) / span * 60).toFixed(1)}`).join(' ');
+      const first = data.candles[0], last = data.candles.at(-1), changeClass = data.change < 0 ? 'negative' : 'positive';
+      $('stockLookupResult').innerHTML = `<article class="global-market-quote"><header><div><b>${esc(data.symbol)} · ${esc(data.name)}</b><small>${esc(data.countryLabel)} · ${esc(data.exchange)} · ${esc(data.currency)}</small></div><button type="button" class="secondary-button" data-back-market-search>返回搜尋結果</button></header><div class="global-market-price"><strong>${formatter.format(data.price)}</strong><span class="${changeClass}">${data.change > 0 ? '+' : ''}${formatter.format(data.change)}（${data.changePercent > 0 ? '+' : ''}${data.changePercent.toFixed(2)}%）</span></div>${points ? `<div class="global-market-chart"><svg viewBox="0 0 360 76" role="img" aria-label="${esc(data.symbol)} 近期日收盤價走勢"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><small>日收盤區間 ${formatter.format(min)}–${formatter.format(max)} · ${esc(first?.date || '')} 至 ${esc(last?.date || '')} · ${data.candles.length} 個交易日</small></div>` : '<div class="feature-empty">目前沒有可用的歷史日線。</div>'}<small class="global-market-source">資料來源：${esc(data.source)} · 行情時間 ${esc(data.datetime || data.updatedAt.slice(0, 10))}。${esc(data.priceNote)}</small></article>`;
+    } catch (error) { $('stockLookupResult').innerHTML = `<div class="feature-empty">${esc(error.message || '海外行情讀取失敗。')} <button type="button" class="secondary-button" data-back-market-search>返回搜尋結果</button></div>`; }
+  }
+  function setupStockLookupMarkets() {
+    const form = $('stockLookupForm'), marketLabel = document.createElement('label'), market = document.createElement('select');
+    market.id = 'stockLookupMarket';
+    market.innerHTML = '<option value="tw">台灣（TWSE／TPEx）</option><option value="us">美國</option><option value="jp">日本</option><option value="hk">香港</option><option value="gb">英國</option><option value="de">德國</option><option value="ca">加拿大</option><option value="au">澳洲</option><option value="in">印度</option><option value="sg">新加坡</option><option value="kr">韓國</option><option value="fr">法國</option>';
+    marketLabel.textContent = '選擇股票市場'; marketLabel.append(market); form.insertBefore(marketLabel, form.firstElementChild);
+    const note = document.createElement('small'); note.id = 'stockLookupMarketNote'; form.append(note);
+    const marketStatus = document.createElement('div'); marketStatus.id = 'stockLookupMarketStatus'; marketStatus.className = 'trend-status'; marketStatus.setAttribute('role', 'status'); marketStatus.setAttribute('aria-live', 'polite'); form.after(marketStatus);
+    market.addEventListener('change', () => {
+      const local = market.value === 'tw';
+      $('stockLookupInput').placeholder = local ? '例如：2330、台積電、009816' : '例如：AAPL 或 Apple';
+      $('stockLookupMarketNote').textContent = local ? '行情以證交所／櫃買中心最近交易日收盤資料為準。' : '以公司代號或英文名稱搜尋；報價頻率與可查市場依 Twelve Data 帳戶方案而定。海外查詢不會加入台股持倉或損益。';
+      $('stockLookupResult').innerHTML = `<div class="feature-empty">已切換至${market.selectedOptions[0].textContent}，輸入代號或名稱開始查詢。</div>`;
+    });
+    void fetch('/api/markets/status', { cache: 'no-store' }).then((response) => response.json()).then((data) => {
+      marketStatus.textContent = data.configured ? '海外市場查詢已設定。可使用的國家、即時／延遲狀態與免費額度依資料服務方案而異。' : '海外市場程式已加入；設定 Twelve Data 金鑰後才能查詢。Windows 本機請在 %LOCALAPPDATA%\\Canggu\\config.env 加入 TWELVE_DATA_API_KEY；Render 請在服務的 Environment 設定同名變數。免費 Basic 方案含部分美股即時資料，其他市場依方案與交易所授權。';
+    }).catch(() => { marketStatus.textContent = '海外市場服務狀態目前無法讀取。'; });
+  }
   function renderInsights() {
     const holdings = state.holdings;
     if (!holdings.length) {
@@ -309,7 +359,7 @@
       if (!response.ok) throw new Error(data.error || '行情更新失敗');
       quoteMap = new Map(data.quotes.map((row) => [String(row.code), row])); lastQuoteFetchAt = Date.now(); render(); renderCandidates(data.quotes, data.updatedAt);
       $('stockDeskQuoteDate').textContent = `官方收盤資料 ${data.quotes.map((row) => row.date).filter(Boolean).sort().at(-1) || data.updatedAt.slice(0, 10)} · ${data.source || 'TWSE／TPEx OpenAPI'}`;
-      if ($('stockLookupInput').value.trim()) showStockLookup($('stockLookupInput').value);
+      if ($('stockLookupInput').value.trim() && $('stockLookupMarket')?.value === 'tw') showStockLookup($('stockLookupInput').value);
       evaluateAlerts();
       const dates = [...new Set(state.holdings.map((item) => quoteMap.get(stockCode(item.name))?.date).filter(Boolean))];
       const matched = state.holdings.filter((item) => quoteMap.has(stockCode(item.name))).length;
@@ -435,14 +485,20 @@
         ...(sec.filings || []).map((item, index) => [`F${index + 1}`, { title: `${item.form} ${item.date || ''} ${item.description || ''}`.trim(), url: item.url, date: item.date }]),
         ...(sec.financials || []).map((item, index) => [`M${index + 1}`, { title: `${item.label} ${item.end || ''}`.trim(), date: item.end }])
       ]);
-      const showEvidence = (evidence) => Array.isArray(evidence) && evidence.length ? `<div class="global-evidence"><b>判斷依據</b>${evidence.map((id) => { const source = researchSources.get(id); if (!source) return ''; const label = `<span>${esc(id)}</span> ${esc(source.title)}${source.date ? ` · ${esc(source.date)}` : ''}`; return source.url ? `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : `<div class="global-evidence-text">${label}</div>`; }).join('')}</div>` : '<small class="global-evidence-missing">尚無可核對來源</small>';
+      const showEvidence = (evidence) => Array.isArray(evidence) && evidence.length ? `<div class="global-evidence"><b>引用來源（可點擊核對）</b>${evidence.map((id) => { const source = researchSources.get(id); if (!source) return ''; const label = `<span>${esc(id)}</span> ${esc(source.title)}${source.date ? ` · ${esc(source.date)}` : ''}`; return source.url ? `<a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : `<div class="global-evidence-text">${label}</div>`; }).join('')}</div>` : '<small class="global-evidence-missing">尚無可核對來源</small>';
+      const evidenceCoverage = (item) => {
+        const summary = item.evidenceSummary || {};
+        const count = Number(summary.count) || 0;
+        const types = Array.isArray(summary.types) ? summary.types : [];
+        return count ? `引用依據：${count} 則${types.length ? `（${types.map(esc).join('、')}）` : ''}` : '引用依據：無';
+      };
       const directionClass = (value) => value === '可能受惠' ? 'positive' : value === '可能承壓' ? 'negative' : 'uncertain';
-      const industryCards = industries.map((item) => `<article class="global-impact-industry"><header><b>${esc(item.name || '未分類產業')}</b><span>信心${esc(item.confidence || '未評估')}</span></header><p>${esc(item.impact || '')}</p><small>可能傳導：${esc(item.transmission || '資料不足')}</small>${showEvidence(item.evidence)}</article>`).join('');
+      const industryCards = industries.map((item) => `<article class="global-impact-industry"><header><b>${esc(item.name || '未分類產業')}</b><span title="模型自評的定性程度，不是機率">模型信心${esc(item.confidence || '未評估')}</span></header><p>${esc(item.impact || '')}</p><small>可能傳導：${esc(item.transmission || '資料不足')}</small><small>${evidenceCoverage(item)}</small>${showEvidence(item.evidence)}</article>`).join('');
       const impactStockCards = impactStocks.map((item) => {
         const quote = item.quote, price = quote ? Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose) : Number(item.dailyClose);
         const quoteDate = quote?.date || quote?.quoteUpdatedAt || quote?.lastUpdated || item.dailyDate || '';
         const priceLabel = Number.isFinite(price) && price > 0 ? `NT$ ${price.toLocaleString('zh-TW')} · ${esc(quoteDate)} · ${esc(quote?.quoteSource || '最近收盤')}` : esc(item.quoteError || '目前無行情');
-        return `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge ${directionClass(item.impact)}">${esc(item.impact || '影響不明')}</span></header><small>${esc(item.market || '')} · ${priceLabel} · 信心${esc(item.confidence || '未評估')}</small><div class="global-pathway"><span>海外事件</span><i>→</i><span>${esc(item.industry || '相關產業')}</span><i>→</i><b>${esc(item.code)} ${esc(item.name || '')}</b></div><p>${esc(item.reason || '')}</p>${item.horizon ? `<small>觀察區間：${esc(item.horizon)}</small>` : ''}${showEvidence(item.evidence)}</article>`;
+        return `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge ${directionClass(item.impact)}">${esc(item.impact || '影響不明')}</span></header><small title="模型信心是定性自評，不是機率">${esc(item.market || '')} · ${priceLabel} · 模型信心${esc(item.confidence || '未評估')}</small><small>${evidenceCoverage(item)}</small><div class="global-pathway"><span>海外事件</span><i>→</i><span>${esc(item.industry || '相關產業')}</span><i>→</i><b>${esc(item.code)} ${esc(item.name || '')}</b></div><p>${esc(item.reason || '')}</p>${item.horizon ? `<small>觀察區間：${esc(item.horizon)}</small>` : ''}${showEvidence(item.evidence)}</article>`;
       }).join('');
       const requestedStockCards = (analysis.requestedStocks || []).map((item) => `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge uncertain">${esc(item.impact || '尚無足夠證據')}</span></header><small>${esc(item.market || '')} · 最近收盤 NT$ ${Number(item.dailyClose || 0).toLocaleString('zh-TW')} · ${esc(item.dailyDate || '')}</small><p>${esc(item.reason || '')}</p></article>`).join('');
       const risks = (analysis.risks || []).map((risk) => `<li>${esc(risk)}</li>`).join('');
@@ -450,6 +506,10 @@
       const replayNews = (research.headlines || []).filter((item) => item.publishedAt && item.link).slice(0, 10);
       const replayPanel = impactStocks.length && replayNews.length ? `<section class="global-replay"><h3>歷史事件回放</h3><p>以新聞日期前一個收盤價為基準，比較事件後 5／20 個交易日的價格變化；這是歷史比較，不代表事件造成漲跌。</p><div class="global-replay-form"><label>事件新聞<select id="globalReplayNews">${replayNews.map((item, index) => `<option value="${index}">${esc(item.publishedAt)} · ${esc(item.title)}</option>`).join('')}</select></label><label>觀察台股<select id="globalReplayStock">${impactStocks.map((item) => `<option value="${esc(item.code)}">${esc(item.code)} ${esc(item.name)}</option>`).join('')}</select></label><button type="button" class="secondary-button" id="globalReplayRun">比較事件前後</button></div><div id="globalReplayResult" class="global-replay-result" aria-live="polite"></div></section>` : '';
       $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${research.ticker}）` : ''} · 國際事件研究</b><p>${esc(analysis.summary || '目前沒有足夠公開資料可做產業與個股推論。')}</p><small>分析方式：${esc(data.provider === 'ollama' ? 'Ollama' : 'Gemini 3.8 Flash')} · 個股關聯為研究推論，並須引用下方來源</small></div>${replayPanel}<section><h3>可能受影響的產業 · ${industries.length} 項</h3><div class="global-impact-grid">${industryCards || '<p>目前沒有足夠資料判斷受影響產業。請確認新聞與申報來源是否有資料。</p>'}</div></section><section><h3>有來源支持的相關台股 · ${impactStocks.length} 檔</h3><div class="global-impact-grid">${impactStockCards || '<p>目前沒有足夠證據確認相關個股，不會把手動輸入的股票直接當成受影響標的。</p>'}</div>${invalidCodes}</section>${requestedStockCards ? `<section><h3>你指定檢視的股票（尚未確認與事件相關）</h3><div class="global-impact-grid">${requestedStockCards}</div></section>` : ''}${risks ? `<section><h3>仍需查證</h3><ul class="global-links">${risks}</ul></section>` : ''}<section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>Google News 目前沒有傳回相關文章。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股名單為證交所與櫃買中心；報價優先 Fugle，無法取得時回退至 TWSE／TPEx 最近收盤資料。</small>`;
+      const confidenceNote = document.createElement('small');
+      confidenceNote.className = 'global-source-note';
+      confidenceNote.textContent = '模型信心是定性自評，不是機率；引用來源數量只表示模型引用了幾筆資料，不代表來源品質或因果證明。請點開來源自行核對。';
+      $('globalResearchResult').querySelector('.global-result-summary')?.append(confidenceNote);
       $('globalReplayRun')?.addEventListener('click', async () => {
         const replayButton = $('globalReplayRun'), resultNode = $('globalReplayResult');
         const newsIndex = Number($('globalReplayNews').value), selectedNews = replayNews[newsIndex], code = $('globalReplayStock').value;
@@ -469,7 +529,7 @@
         } catch (error) { resultNode.textContent = error.message || '歷史回放讀取失敗。'; }
         finally { replayButton.disabled = false; replayButton.textContent = '比較事件前後'; }
       });
-      $('globalResearchResult').hidden = false; $('globalResearchStatus').textContent = research.headlines?.length || sec.available ? `已取得 ${research.headlines?.length || 0} 則新聞${sec.available ? '與 SEC 申報資料' : ''}，分析結果會標明來源；請核對原文與推論。` : '新聞與 SEC 來源目前沒有可用資料；畫面已標示資料不足，不會猜測相關產業或個股。';
+      $('globalResearchResult').hidden = false; $('globalResearchStatus').textContent = research.headlines?.length || sec.available ? `已取得 ${research.headlines?.length || 0} 則新聞${sec.available ? '與 SEC 申報資料' : ''}，分析結果會標明來源；請核對原文與推論。` : '新聞與 SEC 來源目前沒有可用資料；畫面已標示資料不足，不會猜測相關產業或個股。'; void refreshAssistantMetrics();
     } catch (error) { $('globalResearchStatus').textContent = error.message || '查詢失敗，請稍後再試。'; }
     finally { button.disabled = false; button.textContent = '分析產業與個股'; }
   });
@@ -485,12 +545,17 @@
   }
   ['addHolding','addHoldingTop','emptyAdd'].forEach((id) => $(id).addEventListener('click', () => openHolding()));
   $('addPrice').addEventListener('click', openPrice);
+  setupStockLookupMarkets();
   $('stockLookupForm').addEventListener('submit', async (event) => {
     event.preventDefault(); const query = $('stockLookupInput').value.trim();
+    if ($('stockLookupMarket').value !== 'tw') { await searchInternationalMarket(query); return; }
     if (!quoteMap.size) { $('stockLookupResult').innerHTML = '<div class="feature-empty">正在更新全市場行情…</div>'; await refreshQuotes(); }
     showStockLookup(query);
   });
   $('stockLookupResult').addEventListener('click', (event) => {
+    const international = event.target.closest('[data-international-stock]'), back = event.target.closest('[data-back-market-search]');
+    if (international) { void loadInternationalQuote(lastInternationalSearch?.results?.[Number(international.dataset.internationalStock)]); return; }
+    if (back && lastInternationalSearch) { void searchInternationalMarket($('stockLookupInput').value.trim()); return; }
     const add = event.target.closest('[data-watch-add]'), analyze = event.target.closest('[data-stock-analyze]'), fundamental = event.target.closest('[data-fundamentals]');
     if (add && !state.watchlist.includes(add.dataset.watchAdd)) { state.watchlist.push(add.dataset.watchAdd); state.watchlistGroups[add.dataset.watchAdd] = '觀察中'; persist(); renderStockWatchlist(); showStockLookup($('stockLookupInput').value); showToast('已加入「觀察中」分組。'); }
     if (analyze) openStockAnalysis(analyze.dataset.stockAnalyze);
@@ -583,6 +648,17 @@
     }
   }
   const assistantHistory = [];
+  function renderAssistantMetrics(data) {
+    let node = $('assistantMetrics');
+    if (!node) { node = document.createElement('div'); node.id = 'assistantMetrics'; node.className = 'assistant-status'; $('assistantStatus').after(node); }
+    const provider = $('assistantProvider').value;
+    const metric = data?.aiMetrics?.[provider];
+    if (!metric?.total) { node.textContent = 'AI 服務統計：目前尚無本次啟動期間的模型請求紀錄。'; return; }
+    node.textContent = `${provider === 'ollama' ? 'Ollama' : 'Gemini'} 服務統計（伺服器本次啟動）：${metric.total} 次，成功 ${metric.successRatePercent}%，平均 ${metric.averageDurationMs.toLocaleString('zh-TW')} 毫秒${metric.lastErrorCode ? `；最近錯誤代碼 ${metric.lastErrorCode}` : ''}。重啟伺服器後歸零。`;
+  }
+  async function refreshAssistantMetrics() {
+    try { const response = await fetch('/api/assistant/status', { cache: 'no-store' }); if (response.ok) renderAssistantMetrics(await response.json()); } catch {}
+  }
   function formatAssistantText(value) {
     const currencyMarker = '\uE000';
     return String(value || '')
@@ -642,6 +718,7 @@
   async function checkAssistantStatus() {
     try {
       const response = await fetch('/api/assistant/status', { cache: 'no-store' }), data = await response.json();
+      renderAssistantMetrics(data);
       assistantProviderAvailability = data.providers || { fugle: false, ollama: data.provider === 'ollama' && data.configured, gemini: data.provider === 'gemini' && data.configured };
       $('assistantBadge').dataset.ollamaModel = data.ollamaModel || (data.provider === 'ollama' ? data.model : '') || '本機模型';
       const select = $('assistantProvider');
@@ -664,7 +741,7 @@
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
       if (ollamaTopupOption.disabled && $('topupMode').value === 'ollama') { $('topupMode').value = 'fugle'; updateTopupMode(); }
       if (!assistantProviderAvailability[select.value]) select.value = assistantProviderAvailability[data.provider] ? data.provider : assistantProviderAvailability.ollama ? 'ollama' : assistantProviderAvailability.gemini ? 'gemini' : 'fugle';
-      select.addEventListener('change', updateAssistantProviderCopy);
+      select.addEventListener('change', () => { updateAssistantProviderCopy(); void refreshAssistantMetrics(); });
       updateAssistantProviderCopy();
       if (!assistantProviderAvailability.ollama && !assistantProviderAvailability.gemini && !assistantProviderAvailability.fugle) $('assistantStatus').textContent = '尚未設定 Fugle 或可用的助理服務。';
     } catch { $('assistantBadge').textContent = '助理設定無法讀取'; $('assistantStatus').textContent = '目前無法連線到助理設定，請重新整理後再試。'; }
@@ -692,8 +769,9 @@
       pending.querySelector('p').textContent = formatAssistantText(result.answer);
       assistantHistory.push({ role: 'assistant', content: result.answer });
       $('assistantStatus').textContent = '';
+      void refreshAssistantMetrics();
     } catch (error) {
-      pending.remove(); assistantHistory.pop(); addAssistantMessage('assistant', error.message || '連線失敗，請稍後再試。'); $('assistantStatus').textContent = '這次沒有取得回答；你可以稍後重新送出。';
+      pending.remove(); assistantHistory.pop(); addAssistantMessage('assistant', error.message || '連線失敗，請稍後再試。'); $('assistantStatus').textContent = '這次沒有取得回答；你可以稍後重新送出。'; void refreshAssistantMetrics();
     } finally { button.disabled = false; $('assistantInput').focus(); }
   });
   checkAssistantStatus();
