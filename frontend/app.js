@@ -19,6 +19,9 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   let quoteRefreshPromise = null;
   let lastQuoteFetchAt = 0;
   let screenCandidateResults = null;
+  let overviewSort = { key: 'value', descending: true };
+  let overviewHoldingId = '';
+  let taiwanQuoteFreshness = { state: 'pending', label: '台股行情待更新', title: '' };
   let toastTimer;
   let supabaseClient = null, cloudUser = null, cloudReady = false, cloudSyncEnabled = false, cloudSyncTimer = null, lastCloudUpdatedAt = '';
   let servicesStarted = false, accountMode = 'login', cloudRevision = 0, cloudDirty = false, cloudWrite = null;
@@ -65,6 +68,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   function startAppServices() {
     if (servicesStarted) return;
     servicesStarted = true; checkFugleStatus(); renderCandidates(); refreshQuotes(); checkTopupReviewReminders(); renderTopupReviewReminders();
+    if (!$('workspace').hidden) maybeLoadWorkspaceHolding();
   }
   async function initAccountSync() {
     let config;
@@ -266,7 +270,6 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     const filter = $('newsStockFilter'), selected = filter.value || 'all';
     filter.innerHTML = `<option value="all">全部持股</option>` + holdings.map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('');
     filter.value = holdings.some((item) => item.id === selected) || selected === 'all' ? selected : 'all';
-    if (!holdings.length) $('quoteStatus').textContent = '新增持股後可更新最新交易日行情';
     renderInsights();
     renderTrend();
     renderLedger(); renderAllocation(); renderAlerts(); renderJournal(); renderTopupReviewReminders();
@@ -275,61 +278,132 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   function renderOverviewSummary(market, holdings) {
     const totals = marketTotals(holdings, livePrice, holdingCurrency);
     if (!totals.size) totals.set(marketCurrencies[market], { cost: 0, value: 0 });
+    const priced = holdings.filter((item) => livePrice(item) > 0);
+    const pricedTotals = marketTotals(priced, livePrice, holdingCurrency);
     const groups = [...totals].sort(([a], [b]) => a.localeCompare(b));
-    const fields = { marketValue: (row) => row.value, costValue: (row) => row.cost, totalPnl: (row) => row.value - row.cost };
+    const fields = {
+      marketValue: (row, pricedRow) => pricedRow?.value,
+      costValue: (row) => row.cost,
+      totalPnl: (row, pricedRow) => pricedRow ? pricedRow.value - pricedRow.cost : null
+    };
     for (const [id, amount] of Object.entries(fields)) {
       $(id).innerHTML = groups.map(([currency, row]) => {
-        const value = amount(row);
+        const value = amount(row, pricedTotals.get(currency));
         const color = id === 'totalPnl' ? (value < 0 ? 'negative' : value > 0 ? 'positive' : '') : '';
-        return `<span class="${color}">${esc(currencyMoney(value, currency))}</span>`;
+        const formatted = value == null ? (groups.length > 1 && currency ? currency + ' —' : '—') : currencyMoney(value, currency);
+        return `<span class="${color}">${esc(formatted)}</span>`;
       }).join('');
       $(id).classList.toggle('metric-breakdown', groups.length > 1);
     }
-    const row = groups[0][1], ratio = row.cost ? (row.value - row.cost) / row.cost * 100 : 0;
-    $('totalPnlPct').hidden = groups.length > 1 || !row.cost;
+    const row = pricedTotals.get(groups[0][0]);
+    const ratio = row?.cost ? (row.value - row.cost) / row.cost * 100 : 0;
+    $('totalPnlPct').hidden = groups.length > 1 || !row?.cost;
     $('totalPnlPct').textContent = pct(ratio);
     $('totalPnlPct').classList.toggle('negative', ratio < 0);
-    $('pnlBasis').textContent = '市值減帳面成本，未扣預估賣出費用';
+    const fallback = priced.filter((item) => !holdingQuote(item)).length;
+    const missing = holdings.length - priced.length;
+    $('marketValueBasis').textContent = [fallback ? `${fallback} 筆使用備用價` : '', missing ? `${missing} 筆尚無價格` : ''].filter(Boolean).join(' · ');
+    $('pnlBasis').textContent = missing ? '僅計入有價格的持倉' : '未扣賣出費用';
+    $('overviewTaiwanTotals').hidden = market !== 'tw';
+    $('overviewCurrency').textContent = [marketLabels[market], groups.map(([currency]) => currency || '幣別未填').join('／')].join(' · ');
+  }
+  function renderOverviewQuoteStatus() {
+    const market = $('overviewMarketFilter').value;
+    const taiwan = market === 'tw';
+    const holdings = state.holdings.filter((item) => holdingMarket(item) === market);
     const quotes = holdings.map(holdingQuote).filter(Boolean);
+    if (taiwan && !quotes.length) quotes.push(...quoteMap.values());
     const dates = [...new Set(quotes.map((quote) => String(quote.datetime || quote.date || '').slice(0, 10)).filter(Boolean))].sort();
-    const source = market === 'tw' ? 'TWSE／TPEx' : 'Twelve Data';
-    const range = dates.length === 1 ? dates[0] : dates.length > 1 ? dates[0] + ' 至 ' + dates.at(-1) : '日期未提供';
-    $('marketValueBasis').textContent = quotes.length ? source + ' · ' + range + (quotes.length < holdings.length ? ' · 部分使用備用價' : '')
-      : holdings.length ? '依備用價格估算' : '此市場尚無持股';
-    $('summaryGrid').classList.toggle('is-overseas', market !== 'tw');
-    $('summaryGrid').querySelectorAll('[data-tw-only]').forEach((card) => { card.hidden = market !== 'tw'; });
-    if (!$('overview').hidden) $('marketFreshness').hidden = market !== 'tw';
+    const range = dates.length > 1 ? `${dates[0]} 至 ${dates.at(-1)}` : dates[0] || '日期未提供';
+    const updating = overviewQuoteJobs.has(market);
+    const headline = taiwan
+      ? quotes.length ? `TWSE／TPEx · 收盤 ${range}` : taiwanQuoteFreshness.label
+      : quotes.length ? `Twelve Data · 報價 ${range}` : holdings.length ? '尚未取得海外報價' : '尚無此市場持股';
+    const previous = quotes.length > 0;
+    const taiwanStatus = taiwanQuoteFreshness.state;
+    const note = updating || (taiwan && taiwanStatus === 'loading') ? '更新中'
+      : taiwan && taiwanStatus === 'stale' ? '沿用快取'
+      : taiwan && taiwanStatus === 'error' ? '更新有異常' : '';
+    $('overviewQuoteHeadline').textContent = previous && note ? `${headline} · ${note}` : updating ? '行情更新中' : headline;
+    $('quoteStatus').hidden = !taiwan;
+    const overseasStatus = overviewQuoteStatus.get(market) || '';
+    $('overviewMarketStatus').textContent = overseasStatus;
+    $('overviewMarketStatus').hidden = taiwan || !overseasStatus;
+    $('overseasQuoteNote').hidden = taiwan;
+    const status = taiwan ? taiwanQuoteFreshness : {
+      state: updating ? 'loading' : overseasStatus.includes('未更新：') ? 'error' : quotes.length ? 'fresh' : 'pending',
+      label: updating ? `${marketLabels[market]}行情更新中` : quotes.length ? `${marketLabels[market]}報價 · ${dates.at(-1) || '日期未提供'}` : `${marketLabels[market]}行情待更新`,
+      title: overseasStatus || headline
+    };
+    const badge = $('quoteFreshnessBadge');
+    badge.dataset.state = status.state;
+    badge.textContent = status.label;
+    badge.title = status.title || status.label;
+    $('refreshQuotes').hidden = !taiwan;
+    $('refreshMarketHoldings').hidden = taiwan || !holdings.some((item) => item.symbol && (item.micCode || item.exchange));
+    $('refreshMarketHoldings').disabled = updating;
+    $('refreshMarketHoldings').textContent = updating ? '更新中…' : '↻ 更新行情';
+  }
+  function overviewPosition(item) {
+    const quote = holdingQuote(item);
+    const unitPrice = livePrice(item);
+    const price = unitPrice > 0 ? unitPrice : null;
+    const shares = num(item.shares), cost = num(item.cost);
+    const symbol = item.symbol || (holdingMarket(item) === 'tw' ? stockCode(item.name) : '');
+    const name = symbol && item.name.startsWith(symbol + ' ') ? item.name.slice(symbol.length + 1) : item.name;
+    return { item, quote, symbol, name, shares, cost, price, currency: holdingCurrency(item),
+      value: price == null ? null : price * shares, pnl: price == null ? null : (price - cost) * shares,
+      pnlPct: price != null && cost > 0 && shares > 0 ? (price - cost) / cost * 100 : null };
+  }
+  const pnlClass = (value) => value < 0 ? 'negative' : value > 0 ? 'positive' : '';
+  function overviewPriceSource(row) {
+    const { quote, item, price } = row;
+    if (quote) {
+      const taiwan = holdingMarket(item) === 'tw';
+      return [quote.source || (taiwan ? 'TWSE／TPEx' : 'Twelve Data'), taiwan ? '收盤' : '報價', quote.datetime || quote.date || '資料時間未提供'].join(' · ');
+    }
+    return price == null ? '尚無可用價格' : ['備用價', item.updated].filter(Boolean).join(' · ');
   }
   function renderOverviewHoldings() {
-    const container = $('overviewHoldings');
-    if (!container) return;
-    const market = $('overviewMarketFilter')?.value || 'tw';
+    const market = $('overviewMarketFilter').value;
     const marketHoldings = state.holdings.filter((item) => holdingMarket(item) === market);
     renderOverviewSummary(market, marketHoldings);
-    const holdings = marketHoldings.sort((a, b) => holdingCurrency(a).localeCompare(holdingCurrency(b)) || livePrice(b) * num(b.shares) - livePrice(a) * num(a.shares)).slice(0, 4);
-    $('overviewMarketStatus').textContent = (holdings.length && overviewQuoteStatus.get(market)) || '';
-    $('refreshMarketHoldings').hidden = market === 'tw' || !holdings.length;
-    $('refreshMarketHoldings').disabled = overviewQuoteJobs.has(market);
-    $('refreshMarketHoldings').textContent = overviewQuoteJobs.has(market) ? '更新中…' : '更新行情';
-    if (!holdings.length) {
-      container.innerHTML = market === 'tw' ? '<div class="overview-empty"><span>目前還沒有台股持倉</span><small>新增股票後，這裡會顯示市值較高的部位與目前損益。</small><a href="#holdings">前往管理持股 ↗</a></div>' : `<div class="overview-empty"><span>尚未加入${esc(marketLabels[market] || '此市場')}持股</span><small>到個股查詢搜尋股票，再按「加入持股」。</small><a href="#stockDesk">前往海外個股查詢 ↗</a></div>`;
-      return;
+    renderOverviewQuoteStatus();
+    const { key, descending } = overviewSort;
+    const rows = marketHoldings.map(overviewPosition).sort((a, b) => {
+      const group = a.currency.localeCompare(b.currency);
+      if (group && ['cost', 'price', 'value', 'pnl'].includes(key)) return group;
+      const left = a[key], right = b[key];
+      if (left == null || right == null) return Number(left == null) - Number(right == null);
+      const order = key === 'symbol' ? (left || a.name).localeCompare(right || b.name, 'zh-TW') : left - right;
+      return (descending ? -order : order) || a.name.localeCompare(b.name, 'zh-TW');
+    });
+    $('overviewPositionCount').textContent = `${rows.length} 筆`;
+    $('overviewTable').hidden = !rows.length;
+    $('overviewEmpty').hidden = Boolean(rows.length);
+    $('overviewEmpty').textContent = rows.length ? '' : `尚無${marketLabels[market]}持股。可使用上方「新增持股」。`;
+    for (const button of $('overviewTable').querySelectorAll('[data-desk-sort]')) {
+      const header = button.closest('th');
+      if (button.dataset.deskSort === key) header.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
+      else header.removeAttribute('aria-sort');
     }
-    container.innerHTML = holdings.map((item) => {
-      const quote = holdingQuote(item), currency = holdingCurrency(item), price = livePrice(item);
-      const value = price * num(item.shares), pnlValue = (price - num(item.cost)) * num(item.shares);
-      const pnlRate = num(item.cost) * num(item.shares) ? pnlValue / (num(item.cost) * num(item.shares)) * 100 : 0;
-      const quoteTime = quote?.datetime || quote?.date;
-      const priceLabel = quote ? (quote.source || 'TWSE／TPEx') + ' · ' + (quoteTime || '時間未提供') : '使用備用價格';
-      return `<article class="overview-holding"><div class="overview-holding-title"><span class="overview-holding-mark">${esc(item.name.trim().slice(0,1) || '股')}</span><span><b>${esc(item.name)}</b><small>${esc(priceLabel)}</small></span></div><div class="overview-holding-value"><b>${currencyMoney(value, currency)}</b><small>${num(item.shares).toLocaleString('zh-TW')} 股 · ${currencyMoney(price, currency)}／股</small></div><div class="overview-holding-pnl ${pnlValue < 0 ? 'negative' : 'positive'}"><b>${currencyMoney(pnlValue, currency)}</b><small>${pct(pnlRate)}</small></div>${holdingScenarioButton(item, true)}</article>`;
+    const focusedId = document.activeElement?.dataset.deskPosition;
+    $('overviewHoldings').innerHTML = rows.map((row) => {
+      const { item, symbol, name, shares, cost, price, value, pnl, pnlPct, currency } = row;
+      const valueText = (amount) => amount == null ? '—' : esc(currencyMoney(amount, currency));
+      return `<tr>
+        <th scope="row"><button type="button" class="desk-position-link" data-desk-position="${esc(item.id)}">${symbol ? `<strong>${esc(symbol)}</strong>` : ''}<span>${esc(name)}</span></button></th>
+        <td>${shares.toLocaleString('zh-TW')}</td><td>${valueText(cost)}</td>
+        <td title="${esc(overviewPriceSource(row))}">${valueText(price)}${!row.quote && price != null ? '<small>備用價</small>' : ''}</td>
+        <td>${valueText(value)}</td><td class="${pnlClass(pnl)}">${valueText(pnl)}${pnlPct == null ? '' : `<small>${pct(pnlPct)}</small>`}</td>
+      </tr>`;
     }).join('');
+    if (focusedId) [...$('overviewHoldings').querySelectorAll('button')].find((button) => button.dataset.deskPosition === focusedId)?.focus({ preventScroll: true });
+    if ($('overviewHoldingDialog').open) renderOverviewHoldingDetail();
   }
   function setQuoteFreshness(state, label, title = '') {
-    const badge = $('quoteFreshnessBadge');
-    if (!badge) return;
-    badge.dataset.state = state;
-    badge.textContent = label;
-    badge.title = title || label;
+    taiwanQuoteFreshness = { state, label, title };
+    renderOverviewQuoteStatus();
   }
   function quoteChangePct(quote) {
     const price = num(quote.price), change = Number(quote.change);
@@ -581,7 +655,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       const dataDate = data.quotes.map((row) => row.date).filter(Boolean).sort().at(-1) || '最近交易日';
       $('quoteStatus').textContent = `${taiwanHoldings.length ? `${matched}/${taiwanHoldings.length} 檔台股持股比對成功 · ` : `全市場 ${data.quotes.length.toLocaleString('zh-TW')} 檔 · `}${dataDate} 最近交易日收盤 · 來源 ${data.source || 'TWSE／TPEx OpenAPI'} · 查詢於 ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}`;
       const badgeText = data.stale ? '沿用收盤資料 ' + dataDate : data.warnings?.length ? '部分市場有更新 ' + dataDate : '官方收盤 ' + dataDate;
-      setQuoteFreshness(data.warnings?.length ? 'error' : 'fresh', badgeText, data.warnings?.join(' · ') || '最近查詢 ' + new Date(lastQuoteFetchAt).toLocaleString('zh-TW'));
+      setQuoteFreshness(data.stale ? 'stale' : data.warnings?.length ? 'error' : 'fresh', badgeText, data.warnings?.join(' · ') || '最近查詢 ' + new Date(lastQuoteFetchAt).toLocaleString('zh-TW'));
       if (data.warnings?.length) $('quoteStatus').textContent += ` · ${data.warnings.join('、')}`;
       if (taiwanHoldings.length && !matched) showToast('行情已連線，但台股持股名稱中需要有 4–6 碼股票代號才能配對。');
     } catch (error) { const detail = error.message.includes('Failed to fetch') ? '無法連到資料服務，請確認服務已啟動。' : error.message; const previousDate = [...quoteMap.values()].map((row) => row.date).filter(Boolean).sort().at(-1); $('quoteStatus').textContent = previousDate ? `更新失敗，暫沿用 ${previousDate} 的舊資料 · ${detail}` : `行情更新失敗 · ${detail}`; setQuoteFreshness('error', previousDate ? `更新失敗 · 沿用 ${previousDate}` : '行情更新失敗', detail); $('candidateContent').innerHTML = `<div class="news-empty">公開行情暫時無法取得：${esc(error.message)}</div>`; showToast('行情更新失敗；總覽已標出目前資料日期。'); }
@@ -929,15 +1003,62 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   });
   $('addPrice').addEventListener('click', openPrice);
   setupStockLookupMarkets();
-  $('overviewMarketFilter').addEventListener('change', () => { renderOverviewHoldings(); refreshSelectedMarketHoldings(); });
-  $('refreshMarketHoldings').addEventListener('click', () => refreshSelectedMarketHoldings(true));
-  $('overviewHoldings').addEventListener('click', (event) => {
-    const link = event.target.closest('a[href="#stockDesk"]');
-    if (!link) return;
-    const picker = $('stockLookupMarket');
-    picker.value = $('overviewMarketFilter').value;
-    picker.dispatchEvent(new Event('change'));
+  $('overviewMarketFilter').addEventListener('change', () => {
+    renderOverviewHoldings();
+    if ($('overviewMarketFilter').value === 'tw' && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes();
+    else refreshSelectedMarketHoldings();
   });
+  $('refreshMarketHoldings').addEventListener('click', () => refreshSelectedMarketHoldings(true));
+  $('overviewTable').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-desk-sort]');
+    if (!button) return;
+    const key = button.dataset.deskSort;
+    overviewSort = { key, descending: key === overviewSort.key ? !overviewSort.descending : key !== 'symbol' };
+    renderOverviewHoldings();
+  });
+  const overviewHoldingDialog = $('overviewHoldingDialog');
+  const selectedOverviewHolding = () => state.holdings.find((item) => item.id === overviewHoldingId);
+  function renderOverviewHoldingDetail() {
+    const item = selectedOverviewHolding();
+    if (!item) { if (overviewHoldingDialog.open) overviewHoldingDialog.close(); return; }
+    const row = overviewPosition(item);
+    $('overviewHoldingIdentity').textContent = [row.symbol, marketLabels[holdingMarket(item)], row.currency, item.exchange].filter(Boolean).join(' · ');
+    $('overviewHoldingTitle').textContent = row.name || row.symbol;
+    const amount = (value) => value == null ? '—' : currencyMoney(value, row.currency);
+    const stats = [
+      ['持有股數', row.shares.toLocaleString('zh-TW')],
+      ['每股均價', amount(row.cost)], ['最新價格', amount(row.price)],
+      ['持倉市值', amount(row.value)], ['投入成本', amount(row.shares * row.cost)],
+      ['未實現損益', [amount(row.pnl), row.pnlPct == null ? '' : pct(row.pnlPct)].filter(Boolean).join(' · '), pnlClass(row.pnl)]
+    ];
+    $('overviewHoldingStats').innerHTML = stats.map(([label, value, color]) => `<div><dt>${label}</dt><dd class="${color || ''}">${esc(value)}</dd></div>`).join('');
+    $('overviewHoldingSource').textContent = overviewPriceSource(row);
+    $('overviewHoldingTrend').disabled = !row.symbol;
+    $('overviewHoldingTrend').textContent = holdingMarket(item) === 'tw' ? '技術趨勢' : '個股行情';
+    $('overviewHoldingScenario').dataset.simulateHolding = item.id;
+  }
+  $('overviewHoldings').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-desk-position]');
+    if (!button) return;
+    overviewHoldingId = button.dataset.deskPosition;
+    renderOverviewHoldingDetail();
+    if (selectedOverviewHolding()) overviewHoldingDialog.showModal();
+  });
+  $('overviewHoldingEdit').addEventListener('click', () => {
+    const item = selectedOverviewHolding();
+    overviewHoldingDialog.close();
+    if (item) openHolding(item);
+  });
+  $('overviewHoldingTrend').addEventListener('click', () => {
+    const item = selectedOverviewHolding();
+    if (!item) return;
+    const { symbol } = overviewPosition(item);
+    const market = holdingMarket(item);
+    overviewHoldingDialog.close();
+    if (market === 'tw') openStockAnalysis(symbol);
+    else openMarketLookup(symbol, market);
+  });
+  $('overviewHoldingScenario').addEventListener('click', () => overviewHoldingDialog.close());
   $('stockLookupForm').addEventListener('submit', async (event) => {
     event.preventDefault(); const query = $('stockLookupInput').value.trim();
     lastInternationalQuote = null;
@@ -981,6 +1102,19 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   $('watchlistGroupFilter').addEventListener('change', renderStockWatchlist);
   $('watchlistSort').addEventListener('change', renderStockWatchlist);
   $('reloadPage').addEventListener('click', () => window.location.reload());
+  const deskSettings = $('deskSettings');
+  document.addEventListener('click', (event) => {
+    if (!deskSettings.open) return;
+    if (!deskSettings.contains(event.target) || event.target.closest('#importBtn, #exportBtn, #installAppBtn, #logoutBtn, .desk-settings-panel a')) {
+      deskSettings.open = false;
+    }
+  });
+  deskSettings.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !deskSettings.open) return;
+    event.preventDefault();
+    deskSettings.open = false;
+    deskSettings.querySelector('summary').focus();
+  });
   $('refreshQuotes').addEventListener('click', refreshQuotes);
   $('refreshCandidates').addEventListener('click', refreshQuotes);
   $('refreshNews').addEventListener('click', refreshNews);
@@ -1614,12 +1748,14 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   workspaceFeatureIds.forEach((id) => { const element = $(id); if (element?.parentElement) workspaceHome.set(id, { parent: element.parentElement, next: element.nextElementSibling }); });
   let workspaceOpenPages = [];
   try { workspaceOpenPages = [...new Set(JSON.parse(localStorage.getItem('duanguWorkspacePages') || '[]').filter((id) => workspaceFeatureIds.includes(id)))]; } catch { workspaceOpenPages = []; }
-  let workspacePositions = {}, workspaceZIndex = 1;
+  let workspacePositions = {}, workspaceColumns = {}, workspaceZIndex = 1;
   try { workspacePositions = JSON.parse(localStorage.getItem('duanguWorkspacePositions') || '{}') || {}; } catch { workspacePositions = {}; }
+  try { workspaceColumns = JSON.parse(localStorage.getItem('duanguWorkspaceColumns') || '{}') || {}; } catch { workspaceColumns = {}; }
   const workspaceLayoutsKey = 'duanguWorkspaceLayouts';
   const workspacePresets = [
-    { id: 'portfolio', name: '持倉檢查', pages: ['insights', 'riskLab', 'holdings'], positions: {} },
-    { id: 'research', name: '盤前研究', pages: ['stockDesk', 'trendAnalysis', 'news'], positions: {} }
+    { id: 'portfolio', name: '持倉檢查', pages: ['holdings', 'insights', 'riskLab'], columns: { holdings: 0, insights: 1, riskLab: 1 } },
+    { id: 'research', name: '盤前研究', pages: ['stockDesk', 'trendAnalysis', 'news'], columns: { stockDesk: 0, trendAnalysis: 1, news: 1 } },
+    { id: 'holdingResearch', name: '持股研究', pages: ['holdings', 'holdingAnalysis', 'news'], columns: { holdings: 0, holdingAnalysis: 1, news: 1 } }
   ];
   let customWorkspaceLayouts = [];
   try {
@@ -1627,7 +1763,10 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     if (Array.isArray(stored)) customWorkspaceLayouts = stored.filter((row) => row?.id && row?.name && Array.isArray(row.pages)).slice(0, 8);
   } catch { /* A malformed saved layout does not block the workbench. */ }
   const persistWorkspacePositions = () => {
-    try { localStorage.setItem('duanguWorkspacePositions', JSON.stringify(workspacePositions)); } catch { /* The current layout is still usable. */ }
+    try {
+      localStorage.setItem('duanguWorkspacePositions', JSON.stringify(workspacePositions));
+      localStorage.setItem('duanguWorkspaceColumns', JSON.stringify(workspaceColumns));
+    } catch { /* The current layout is still usable. */ }
   };
   const persistWorkspace = () => { try { localStorage.setItem('duanguWorkspacePages', JSON.stringify(workspaceOpenPages)); } catch { /* Workspace layout remains usable without browser storage. */ } };
   function saveWorkspacePosition(panel) {
@@ -1719,7 +1858,8 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       if (left + span > 0.5) bottoms[1] = Math.max(bottoms[1], bottom);
     }
     for (const panel of automatic) {
-      const col = narrow || bottoms[0] <= bottoms[1] ? 0 : 1;
+      const preferred = workspaceColumns[panel.dataset.page];
+      const col = narrow ? 0 : preferred === 0 || preferred === 1 ? preferred : Number(bottoms[1] < bottoms[0]);
       panel.style.left = col ? '51%' : '0%'; panel.style.width = narrow ? '100%' : '49%'; panel.style.top = bottoms[col] + 'px';
       bottoms[col] += panel.offsetHeight + 14;
     }
@@ -1744,9 +1884,11 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   }
   function updateWorkspaceControls() {
     [...$('workspaceFeatureSelect').options].forEach((option) => { if (option.value) option.disabled = workspaceOpenPages.includes(option.value); });
-    $('workspaceCount').textContent = workspaceOpenPages.length ? `已開啟 ${workspaceOpenPages.length} 項功能` : '尚未開啟功能';
+    $('workspaceCount').textContent = workspaceOpenPages.length ? `${workspaceOpenPages.length} 個面板` : '尚未開啟面板';
     $('workspaceEmpty').hidden = workspaceOpenPages.length > 0;
     $('saveWorkspaceLayout').disabled = !workspaceOpenPages.length;
+    $('workspaceReset').disabled = !workspaceOpenPages.length;
+    $('workspaceAddFeature').disabled = !$('workspaceFeatureSelect').value;
   }
   function renderWorkspacePanels() {
     restoreWorkspacePanels();
@@ -1766,16 +1908,26 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     });
     updateWorkspaceControls();
     scheduleWorkspaceLayout();
+    if (servicesStarted) maybeLoadWorkspaceHolding();
+  }
+  function maybeLoadWorkspaceHolding() {
+    const id = $('heldStockSelect').value;
+    if (workspaceOpenPages.includes('holdingAnalysis') && id && !($('loadHeldStock').disabled || heldStockData?.holdingId === id)) {
+      loadHeldStock();
+    }
   }
   const workspaceSelect = $('workspaceFeatureSelect');
   workspaceFeatureIds.forEach((id) => { const option = document.createElement('option'); option.value = id; option.textContent = pageTitles[id]; workspaceSelect.append(option); });
+  workspaceSelect.addEventListener('change', updateWorkspaceControls);
   $('workspaceAddFeature').addEventListener('click', () => {
     const id = workspaceSelect.value;
     if (!id || workspaceOpenPages.includes(id)) return;
     workspaceOpenPages.push(id); persistWorkspace(); workspaceSelect.value = ''; renderWorkspacePanels();
   });
   $('workspaceReset').addEventListener('click', () => {
-    workspaceOpenPages = []; workspacePositions = {}; persistWorkspace(); persistWorkspacePositions(); renderWorkspacePanels();
+    workspaceOpenPages = []; workspacePositions = {}; workspaceColumns = {};
+    persistWorkspace(); persistWorkspacePositions(); renderWorkspacePanels();
+    $('workspaceLayoutMenu').open = false;
   });
   window.addEventListener('resize', scheduleWorkspaceLayout);
   const workspaceLayoutSelect = $('workspaceLayout');
@@ -1791,12 +1943,27 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     catch { showToast('瀏覽器儲存空間不足，此版型只保留在目前頁面。'); return false; }
   }
   workspaceLayoutSelect.addEventListener('change', () => refreshWorkspaceLayouts());
+  function applyWorkspaceLayout(layout) {
+    workspaceOpenPages = [...new Set(layout.pages.filter((id) => workspaceFeatureIds.includes(id)))];
+    workspacePositions = layout.positions && typeof layout.positions === 'object' ? structuredClone(layout.positions) : {};
+    workspaceColumns = layout.columns && typeof layout.columns === 'object' ? { ...layout.columns } : {};
+    workspaceSelect.value = '';
+    refreshWorkspaceLayouts(layout.id);
+    persistWorkspace(); persistWorkspacePositions(); renderWorkspacePanels(); showToast('已套用「' + layout.name + '」。');
+  }
+  for (const layout of workspacePresets) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary-button';
+    button.textContent = layout.name;
+    button.addEventListener('click', () => applyWorkspaceLayout(layout));
+    $('workspacePresetActions').append(button);
+  }
   $('applyWorkspaceLayout').addEventListener('click', () => {
     const layout = allWorkspaceLayouts().find((row) => row.id === workspaceLayoutSelect.value);
     if (!layout) return;
-    workspaceOpenPages = [...new Set(layout.pages.filter((id) => workspaceFeatureIds.includes(id)))];
-    workspacePositions = layout.positions && typeof layout.positions === 'object' ? structuredClone(layout.positions) : {};
-    persistWorkspace(); persistWorkspacePositions(); renderWorkspacePanels(); showToast('已套用「' + layout.name + '」。');
+    applyWorkspaceLayout(layout);
+    $('workspaceLayoutMenu').open = false;
   });
   $('saveWorkspaceLayout').addEventListener('click', () => {
     if (!workspaceOpenPages.length) return;
@@ -1806,7 +1973,9 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     if (!other && customWorkspaceLayouts.length >= 8) return showToast('最多儲存 8 組自訂版型。');
     const id = other?.id || crypto.randomUUID();
     const positions = Object.fromEntries(workspaceOpenPages.filter((page) => workspacePositions[page]).map((page) => [page, { ...workspacePositions[page] }]));
-    customWorkspaceLayouts = [...customWorkspaceLayouts.filter((row) => row.id !== id), { id, name, pages: [...workspaceOpenPages], positions }];
+    const columns = Object.fromEntries(workspaceOpenPages.filter((page) => workspaceColumns[page] === 0 || workspaceColumns[page] === 1)
+      .map((page) => [page, workspaceColumns[page]]));
+    customWorkspaceLayouts = [...customWorkspaceLayouts.filter((row) => row.id !== id), { id, name, pages: [...workspaceOpenPages], positions, columns }];
     const saved = storeWorkspaceLayouts();
     refreshWorkspaceLayouts(id);
     if (saved) showToast('已儲存版型至此裝置。');
@@ -1820,28 +1989,33 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   refreshWorkspaceLayouts();
   function showPage(page, updateHash = false) {
     if (!Object.hasOwn(pageTitles, page)) page = 'overview';
+    const main = $('top'), grid = document.querySelector('.lower-grid');
     if (page !== 'workspace') restoreWorkspacePanels();
-    document.querySelector('.lower-grid').hidden = false;
-    $('watchlist').hidden = true; $('references').hidden = true;
-    const mainSections = [...document.querySelectorAll('.main-content > section')];
-    mainSections.forEach((section) => { section.hidden = true; });
-    if (page === 'overview') { $('overview').hidden = false; $('summaryGrid').hidden = false; $('marketFreshness').hidden = $('overviewMarketFilter').value !== 'tw'; $('portfolioSnapshot').hidden = false; $('workflowStrip').hidden = false; $('insights').hidden = false; $('watchlist').hidden = false; $('references').hidden = false; }
-    else if (page === 'workspace') { $('workspace').hidden = false; document.querySelector('.lower-grid').hidden = true; renderWorkspacePanels(); }
-    else if (page === 'watchlist' || page === 'references') {
-      const grid = document.querySelector('.lower-grid'); grid.hidden = false; grid.classList.add('single-page');
-      $('watchlist').hidden = page !== 'watchlist'; $('references').hidden = page !== 'references';
-    } else { $(page).hidden = false; }
+    main.querySelectorAll(':scope > section').forEach((section) => { section.hidden = section.id !== page; });
+    grid.hidden = page !== 'watchlist' && page !== 'references';
+    grid.classList.toggle('single-page', !grid.hidden);
+    $('watchlist').hidden = page !== 'watchlist';
+    $('references').hidden = page !== 'references';
+    if (page === 'workspace') renderWorkspacePanels();
     if (page === 'holdingAnalysis' && $('heldStockSelect').value && (!heldStockData || heldStockData.holdingId !== $('heldStockSelect').value)) loadHeldStock();
     if (page === 'riskLab') stressLab.refresh();
-    if (page !== 'watchlist' && page !== 'references') document.querySelector('.lower-grid').classList.remove('single-page');
     const activeNavGroup = [...document.querySelectorAll('.sidebar nav .nav-link')].find((link) => link.hash === `#${page}`)?.closest('.nav-group');
-    document.querySelectorAll('.sidebar nav .nav-group').forEach((group) => { group.open = group === activeNavGroup; });
+    document.querySelectorAll('.sidebar nav .nav-group').forEach((group) => {
+      group.open = group === activeNavGroup;
+      group.toggleAttribute('data-active-group', group === activeNavGroup);
+    });
     document.querySelectorAll('.sidebar nav .nav-link').forEach((link) => {
       const active = link.hash === `#${page}`; link.classList.toggle('active', active);
+      if (active) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
     });
+    $('breadcrumbGroup').textContent = activeNavGroup?.querySelector('summary').textContent || '端股';
     document.querySelector('.breadcrumb b').textContent = pageTitles[page];
     if (updateHash && location.hash !== `#${page}`) history.pushState(null, '', `#${page}`);
-    if (page === 'overview' && servicesStarted && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes();
+    if (page === 'overview' && servicesStarted) {
+      if ($('overviewMarketFilter').value === 'tw' && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes();
+      else refreshSelectedMarketHoldings();
+    }
     if (window.scrollY > 0) window.scrollTo(0, 0);
   }
   function setMobileNav(open) {
