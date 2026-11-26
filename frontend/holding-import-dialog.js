@@ -1,4 +1,4 @@
-import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTable, reviewImageHoldings } from './holding-image-import.js?v=20261125f';
+import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from './holding-image-import.js?v=20261126d';
 
 const allowedImages = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const maxFileBytes = 12 * 1024 * 1024;
@@ -74,6 +74,52 @@ async function scanImage(canvas, signal, report) {
   }
 }
 
+async function scanPaddle(canvas, signal, report) {
+  const root = new URL('/vendor/ocr/paddle-v1/', location.origin).href;
+  let worker, timeout, stop, stopped = false, failed;
+  const interruption = new Promise((_, reject) => {
+    stop = () => reject(signal.reason);
+    failed = () => reject(new Error('PaddleOCR 無法在此瀏覽器完成辨識。請重試或使用目前的裝置辨識預覽。'));
+    signal.addEventListener('abort', stop, { once: true });
+    timeout = setTimeout(() => reject(new Error('PaddleOCR 辨識超時。可裁切到持股表格後再試。')), 120_000);
+  });
+  const run = async () => {
+    const { PaddleOCR } = await import(root + 'client.js').catch(() => {
+      throw new Error('無法載入 PaddleOCR 辨識元件。請確認網路連線後再試。');
+    });
+    if (stopped || signal.aborted) return [];
+    worker = new Worker(root + 'worker.js', { type: 'module' });
+    worker.addEventListener('error', failed, { once: true });
+    worker.addEventListener('messageerror', failed, { once: true });
+    let result;
+    try {
+      const ocr = await PaddleOCR.create({
+        worker: { createWorker: () => worker },
+        textDetectionModelName: 'PP-OCRv6_small_det',
+        textDetectionModelAsset: { url: root + 'detector.tar' },
+        textRecognitionModelName: 'PP-OCRv6_small_rec',
+        textRecognitionModelAsset: { url: root + 'recognizer.tar' },
+        textRecognitionBatchSize: 4,
+        ortOptions: { backend: 'wasm', numThreads: 1, wasmPaths: root }
+      });
+      if (stopped || signal.aborted) return [];
+      report('PaddleOCR 正在辨識表格文字…');
+      [result] = await ocr.predict(canvas);
+    } catch {
+      throw new Error('PaddleOCR 無法完成辨識。請重試或使用目前的裝置辨識預覽。');
+    }
+    return readPaddleHoldingTable(result?.items ?? []);
+  };
+  try {
+    return await Promise.race([run(), interruption]);
+  } finally {
+    stopped = true;
+    signal.removeEventListener('abort', stop);
+    clearTimeout(timeout);
+    worker?.terminate();
+  }
+}
+
 export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, requestCloudScan, escape }) {
   const byId = (id) => document.getElementById('holdingImport' + id);
   const dialog = byId('Dialog'), form = byId('Form'), file = byId('File'), review = byId('Review');
@@ -81,7 +127,8 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
   const submit = byId('Submit'), count = byId('Count'), addRow = byId('AddRow');
   const cloud = byId('Cloud'), provider = byId('Provider'), consent = byId('Consent'), consentText = byId('ConsentText');
   const scanButton = byId('Scan'), cloudHint = byId('CloudHint'), grid = byId('Grid');
-  let imageUrl = '', imageReady = false, scan = null, cloudBusy = false, available = null, drafts = [];
+  const paddleButton = byId('Paddle'), paddleHint = byId('PaddleHint');
+  let imageUrl = '', imageReady = false, scan = null, advancedBusy = false, available = null, drafts = [];
   let openAIRetryAt = 0, retryTimer;
 
   function setStatus(message) {
@@ -94,9 +141,11 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     const ready = Boolean(available?.[service]);
     const waitSeconds = service === 'openai' ? Math.max(0, Math.ceil((openAIRetryAt - Date.now()) / 1000)) : 0;
     cloud.hidden = !imageReady;
-    provider.disabled = cloudBusy || !Object.values(available || {}).some(Boolean);
-    consent.disabled = cloudBusy || !ready;
-    scanButton.disabled = !imageReady || !ready || !consent.checked || cloudBusy || waitSeconds > 0;
+    paddleButton.hidden = paddleHint.hidden = !imageReady;
+    paddleButton.disabled = advancedBusy;
+    provider.disabled = advancedBusy || !Object.values(available || {}).some(Boolean);
+    consent.disabled = advancedBusy || !ready;
+    scanButton.disabled = !imageReady || !ready || !consent.checked || advancedBusy || waitSeconds > 0;
     scanButton.textContent = ready ? `用 ${providerLabels[service]} 掃描整張圖` : '掃描整張圖';
     if (dialog.open && imageReady && waitSeconds > 0) {
       scanButton.textContent = `OpenAI ${waitSeconds} 秒後可重試`;
@@ -107,13 +156,13 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     cloudHint.hidden = available?.openai === true;
     cloudHint.textContent = available === null ? '正在確認雲端辨識服務…'
       : available.openai === false ? 'OpenAI 尚未設定 API 金鑰。' : '暫時無法確認雲端辨識服務。';
-    grid.inert = cloudBusy;
+    grid.inert = advancedBusy;
   }
 
   function reset() {
     scan?.abort();
     scan = null;
-    cloudBusy = false;
+    advancedBusy = false;
     imageReady = false;
     consent.checked = false;
     if (imageUrl) URL.revokeObjectURL(imageUrl);
@@ -175,7 +224,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     const selected = current.map((row, index) => ({ ...row, action: drafts[index].action })).filter((row) => row.action !== 'skip');
     const incomplete = selected.filter((row) => row.issues.length).length;
     count.textContent = !drafts.length ? '' : `待匯入 ${selected.length} 筆${incomplete ? `，其中 ${incomplete} 筆待修正` : ''}`;
-    submit.disabled = cloudBusy || !selected.length || Boolean(incomplete);
+    submit.disabled = advancedBusy || !selected.length || Boolean(incomplete);
     return selected;
   }
 
@@ -278,18 +327,20 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     consent.checked = false;
     refreshScanControls();
   });
-  scanButton.addEventListener('click', async () => {
-    if (!dialog.open || scanButton.disabled) return;
-    const service = provider.value, label = providerLabels[service];
+  async function runAdvancedScan(service) {
+    const label = providerLabels[service] || 'PaddleOCR';
+    const cloudScan = service !== 'paddle';
     scan?.abort();
     const controller = new AbortController();
     scan = controller;
-    cloudBusy = true;
+    advancedBusy = true;
     refreshScanControls();
     refreshReview();
-    setStatus(`${label} 正在掃描整張圖並找出持股…`);
+    setStatus(cloudScan ? `${label} 正在掃描整張圖並找出持股…` : '正在載入 PaddleOCR，首次使用需要下載辨識模型…');
     try {
-      const rows = await requestCloudScan(service, cloudJpeg(image), controller.signal);
+      const rows = cloudScan
+        ? await requestCloudScan(service, cloudJpeg(image), controller.signal)
+        : await scanPaddle(normalizedImage(image), controller.signal, setStatus);
       if (!dialog.open || controller.signal.aborted) return;
       if (rows.length) {
         showCandidates(rows);
@@ -298,7 +349,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
         if (!drafts.length) showCandidates([]);
         setStatus(`${label} 找不到可確認的台股持股。你可以保留目前預覽，或換張較清楚的圖片。`);
       }
-      consent.checked = false;
+      if (cloudScan) consent.checked = false;
     } catch (error) {
       if (!controller.signal.aborted) {
         if (!drafts.length) showCandidates([]);
@@ -310,11 +361,17 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     } finally {
       if (scan === controller) {
         scan = null;
-        cloudBusy = false;
+        advancedBusy = false;
         refreshScanControls();
         refreshReview();
       }
     }
+  }
+  scanButton.addEventListener('click', () => {
+    if (dialog.open && !scanButton.disabled) void runAdvancedScan(provider.value);
+  });
+  paddleButton.addEventListener('click', () => {
+    if (dialog.open && imageReady && !paddleButton.disabled) void runAdvancedScan('paddle');
   });
 
   body.addEventListener('input', (event) => {
@@ -331,7 +388,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (!dialog.open || review.hidden || cloudBusy) return;
+    if (!dialog.open || review.hidden || advancedBusy) return;
     const selected = refreshReview();
     if (!selected.length || selected.some((row) => row.issues.length)) return;
     if (saveHoldings(selected)) dialog.close();

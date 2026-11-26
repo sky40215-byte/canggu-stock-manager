@@ -5,13 +5,17 @@
   "type": "module",
   "scripts": {
     "start": "node backend/server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "postinstall": "node scripts/prepare-paddle-ocr.mjs"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@paddleocr/paddleocr-js": "0.4.2",
     "@tesseract.js-data/chi_tra": "1.0.0",
+    "esbuild": "0.28.2",
+    "onnxruntime-web": "1.24.3",
     "tesseract.js": "7.0.0",
     "tesseract.js-core": "7.0.0"
   }

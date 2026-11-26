@@ -1,12 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { matchHoldingNames, readHoldingTable, reviewImageHoldings } from '../frontend/holding-image-import.js';
+import { matchHoldingNames, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from '../frontend/holding-image-import.js';
 
 function makeTsv(rows) {
   return rows.flatMap((columns, row) => columns.map((text, column) =>
     [5, 1, 1, 1, 1, column + 1, column * 155, row * 32, 100, 18, 92, text].join('\t')
   )).join('\n');
 }
+
+test('uses PaddleOCR positions and confidence to fill the correct cells', () => {
+  const items = [
+    ['股票代號', '股票名稱', '持有股數', '平均成本', '目前市價'],
+    ['0050', '元大台灣50', '1.0010 張', '157.30', '170.80']
+  ].flatMap((row, line) => row.map((text, column) => {
+    const left = column * 155, top = line * 32;
+    return { text, poly: [[left, top], [left + 92, top], [left + 92, top + 20], [left, top + 20]],
+      score: text === '157.30' ? 0.4 : 0.96 };
+  }));
+  assert.deepEqual(readPaddleHoldingTable(items), [
+    { code: '0050', name: '元大台灣50', shares: '1001', cost: '', price: '170.8' }
+  ]);
+});
 
 test('reads a per-share cost and converts lots without taking values from adjacent columns', () => {
   const tsv = makeTsv([

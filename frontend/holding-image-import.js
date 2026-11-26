@@ -15,7 +15,7 @@ const normalize = (value) => String(value ?? '').normalize('NFKC').trim();
 const nameKey = (value) => normalize(value).replace(/臺/g, '台').replace(/[\s*＊]/g, '').toUpperCase();
 export const isTaiwanImportCode = (value) => /^\d{4,6}$/.test(normalize(value));
 
-function wordRows(tsv) {
+function tsvWords(tsv) {
   const words = [];
   for (const line of tsv.split(/\r?\n/)) {
     const [level, , , , , , left, top, width, height, confidence, ...text] = line.split('\t');
@@ -23,9 +23,12 @@ function wordRows(tsv) {
     if (level !== '5' || !label || Number(width) <= 0 || Number(height) <= 0) continue;
     words.push({ text: label, x: Number(left), y: Number(top) + Number(height) / 2, width: Number(width), height: Number(height), confidence: Number(confidence) });
   }
-  words.sort((a, b) => a.y - b.y);
+  return words;
+}
+
+function wordRows(words) {
   const rows = [];
-  for (const word of words) {
+  for (const word of [...words].sort((a, b) => a.y - b.y)) {
     const row = rows.at(-1);
     if (row && Math.abs(word.y - row.y) <= Math.max(4, Math.max(word.height, row.height) * .48)) {
       row.y += (word.y - row.y) / (row.words.length + 1);
@@ -79,13 +82,36 @@ function readAmount(words, kind, heading) {
   if (!match) return '';
   const unit = match[2] || (kind === 'shares' ? heading.match(/千股|張/u)?.[0] : '');
   if ((kind === 'shares' && unit === '元') || (kind !== 'shares' && unit && unit !== '元')) return '';
-  const number = Number(match[1].replace(/,/g, '')) * (unit === '張' || unit === '千股' ? 1000 : 1);
+  const numericText = match[1].replace(/,/g, '');
+  let number = Number(numericText);
+  if (unit === '張' || unit === '千股') {
+    const [whole, fraction = ''] = numericText.split('.');
+    const preciseFraction = fraction.replace(/0+$/, '');
+    if (preciseFraction.length > 3) return '';
+    number = Number(whole + preciseFraction.padEnd(3, '0'));
+  }
   if (!Number.isFinite(number) || (kind === 'price' && number <= 0) || (kind === 'shares' && (!Number.isSafeInteger(number) || number <= 0))) return '';
   return String(number);
 }
 
 export function readHoldingTable(tsv) {
-  const rows = wordRows(tsv);
+  return readHoldingWords(tsvWords(tsv));
+}
+
+export function readPaddleHoldingTable(items) {
+  const words = items.flatMap(({ text, poly, score }) => {
+    if (!text || !Array.isArray(poly) || poly.length < 4 || !Number.isFinite(score)) return [];
+    const x = poly.map((point) => point[0]), y = poly.map((point) => point[1]);
+    const left = Math.min(...x), top = Math.min(...y);
+    const width = Math.max(...x) - left, height = Math.max(...y) - top;
+    if (!(width > 0) || !(height > 0)) return [];
+    return [{ text: normalize(text), x: left, y: top + height / 2, width, height, confidence: score * 100 }];
+  });
+  return readHoldingWords(words);
+}
+
+function readHoldingWords(words) {
+  const rows = wordRows(words);
   const headings = rows.map(findHeadings);
   const start = headings.findIndex((columns) => columns.some(({ kind }) => identityHeadings.has(kind))
     && columns.some(({ kind }) => kind === 'shares' || kind === 'cost'));

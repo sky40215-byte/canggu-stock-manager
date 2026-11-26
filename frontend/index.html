@@ -140,9 +140,11 @@
         <input id="holdingImportFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
         <button class="secondary-button" id="holdingImportChoose" type="button" autofocus>選擇截圖</button>
         <small id="holdingImportFileName">PNG、JPG 或 WebP，上限 12 MB。預設在此裝置進行文字辨識。</small>
+        <button class="secondary-button" id="holdingImportPaddle" type="button" aria-describedby="holdingImportPaddleHint" hidden>用 PaddleOCR 在裝置辨識</button>
+        <small id="holdingImportPaddleHint" hidden>適合有欄位標題的表格。首次使用需要下載模型，圖片留在瀏覽器。</small>
       </div>
       <section id="holdingImportCloud" class="holding-import-cloud" aria-labelledby="holdingImportCloudTitle" hidden>
-        <div><h3 id="holdingImportCloudTitle">整圖辨識</h3><p>卡片、表格或沒有欄位標題的截圖都可掃描。辨識成功會更新下方預覽。</p><p id="holdingImportCloudHint" hidden></p></div>
+        <div><h3 id="holdingImportCloudTitle">雲端整圖辨識</h3><p>卡片、表格或沒有欄位標題的截圖都可掃描。辨識成功會更新下方預覽。</p><p id="holdingImportCloudHint" hidden></p></div>
         <label class="holding-import-provider">辨識服務
           <select id="holdingImportProvider">
             <option value="openai" data-label="OpenAI · GPT‑6.1 Terra">OpenAI · GPT‑6.1 Terra</option>
@@ -184,6 +186,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261126c"></script>
+  <script type="module" src="app.js?v=20261126d"></script>
 </body>
 </html>

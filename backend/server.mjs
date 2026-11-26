@@ -1,5 +1,7 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +18,16 @@ const OCR_ASSETS = new Map([
     `${name}.wasm.js`, `tesseract.js-core/${name}.wasm.js`
   ]),
   ['chi_tra.traineddata.gz', '@tesseract.js-data/chi_tra/4.0.0_best_int/chi_tra.traineddata.gz']
+]);
+const PADDLE_ASSETS = new Map([
+  ['client.js', 'text/javascript; charset=utf-8'],
+  ['worker.js', 'text/javascript; charset=utf-8'],
+  ['detector.tar', 'application/x-tar'],
+  ['recognizer.tar', 'application/x-tar'],
+  ['ort-wasm-simd-threaded.mjs', 'text/javascript; charset=utf-8'],
+  ['ort-wasm-simd-threaded.wasm', 'application/wasm'],
+  ['ort-wasm-simd-threaded.jsep.mjs', 'text/javascript; charset=utf-8'],
+  ['ort-wasm-simd-threaded.jsep.wasm', 'application/wasm']
 ]);
 const LOCAL_CONFIG_PATH = process.env.CANGGU_CONFIG_PATH || resolve(process.env.LOCALAPPDATA || PROJECT_ROOT, 'Canggu', 'config.env');
 try {
@@ -1146,6 +1158,22 @@ const server = http.createServer(async (req, res) => {
       };
       research.taiwan = taiwan;
       return send(res, 200, { research, impactAnalysis, provider });
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/vendor/ocr/paddle-v1/')) {
+      const asset = url.pathname.slice('/vendor/ocr/paddle-v1/'.length);
+      const mimeType = PADDLE_ASSETS.get(asset);
+      if (!mimeType) return send(res, 404, { error: '找不到辨識元件。' });
+      const file = resolve(PROJECT_ROOT, 'node_modules/.cache/canggu-paddle-ocr', asset);
+      const fileInfo = await stat(file).catch(() => null);
+      if (!fileInfo?.isFile()) return send(res, 503, { error: 'PaddleOCR 辨識元件尚未安裝。' });
+      res.writeHead(200, {
+        'Content-Type': mimeType,
+        'Content-Length': fileInfo.size,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      await pipeline(createReadStream(file), res).catch(() => {});
+      return;
     }
     if (req.method === 'GET' && url.pathname.startsWith('/vendor/ocr/v7/')) {
       const asset = OCR_ASSETS.get(url.pathname.slice('/vendor/ocr/v7/'.length));

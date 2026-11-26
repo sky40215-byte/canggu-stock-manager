@@ -2,7 +2,7 @@ import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.j
 import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
-import { mountHoldingImport } from './holding-import-dialog.js?v=20261126c';
+import { mountHoldingImport } from './holding-import-dialog.js?v=20261126d';
 
 (() => {
   'use strict';
