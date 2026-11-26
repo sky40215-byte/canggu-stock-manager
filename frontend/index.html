@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
   <link rel="stylesheet" href="styles.css?v=20261126h">
-  <link rel="stylesheet" href="workbench.css?v=20261126k">
+  <link rel="stylesheet" href="workbench.css?v=20261126l">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
@@ -180,7 +180,31 @@
 
       <section id="news" class="content-card news-card"><div class="section-heading"><div><h2>新聞與市場動態</h2><p class="news-intro">可依持股或關鍵字搜尋；點選標題查看原文。</p></div><span id="newsFreshness" class="data-status" data-state="pending">尚未查詢</span></div><div class="news-search"><label>股票範圍<select id="newsStockFilter"><option value="all">全部持股</option></select></label><label class="news-keyword-label">關鍵字<input id="newsKeyword" maxlength="80" placeholder="例如：法說、營收、展望"></label><button class="secondary-button" id="refreshNews">⌕ 搜尋新聞</button></div><div id="newsSourceLinks" class="mops-links"></div><div id="newsContent" class="news-list"><div class="news-empty">新增持股或輸入關鍵字開始搜尋。</div></div><div id="mopsQuickLinks" class="mops-links"></div><div class="news-footnote"><span class="info-dot">i</span> 新聞由 Google News RSS 搜尋提供；查詢會傳送所選股票名稱／代號與關鍵字至 Google News。公告原文請至公開資訊觀測站確認。</div></section>
 
-      <section id="globalTaiwanResearch" class="content-card news-card global-research-card"><div class="section-heading"><div><h2>國際事件與台股關聯</h2><p class="news-intro">根據海外公司新聞與財報，查閱海外公司新聞及申報。選用模型時，可另外檢視它整理的台股關聯線索。</p></div><button type="button" id="globalDemoFill" class="secondary-button">填入 NVIDIA 範例</button></div><form id="globalResearchForm" class="global-research-form"><label>國外公司名稱<input id="globalCompany" maxlength="80" placeholder="例如 NVIDIA" required></label><label>美股代號（選填）<input id="globalTicker" maxlength="12" placeholder="例如 NVDA"></label><label>想特別檢視的台股（選填）<input id="globalTaiwanCodes" maxlength="40" placeholder="例如 2330、2317；可留白"></label><label>產業／供應鏈線索（選填）<input id="globalRelation" maxlength="160" placeholder="例如 AI 晶片、伺服器、散熱"></label><label>資料整理方式<select id="globalAiProvider"><option value="sources">只看公開資料</option><option value="gemini">Gemini（雲端）</option><option value="ollama">Ollama</option></select></label><button id="globalResearchSubmit" type="submit" class="primary-button">查詢公開資料</button></form><label class="global-consent"><input id="globalResearchConsent" type="checkbox">我同意將公司名稱、代號、線索、新聞與財報摘要，以及上市櫃公司名稱／代號名單，送到所選 AI 服務分析；不會傳送我的持倉、成本或登入資料。</label><div id="globalResearchStatus" class="trend-status" role="status" aria-live="polite">輸入海外公司名稱即可開始；台股代號可留白，AI 會從上市櫃個股名單中找出可能相關標的。美國公司可查 SEC 公開申報文件。</div><div id="globalResearchResult" class="global-research-result" hidden></div><div class="insight-disclaimer"><span class="info-dot">i</span>產業與個股關聯是模型依公開資料做的研究推論，可能不完整或有誤，請核對來源；不代表已驗證供應鏈、事件因果、漲跌保證或買賣建議。報價使用 Fugle；不會傳送你的持倉資料。</div></section>
+      <section id="globalTaiwanResearch" class="content-card news-card global-research-card">
+        <div class="section-heading"><div><h2>國際事件與台股關聯</h2><p class="news-intro">輸入海外事件，查找相關新聞、可能受影響的台股及逐檔原因。</p></div><button type="button" id="globalDemoFill" class="secondary-button">填入範例</button></div>
+        <form id="globalResearchForm" class="global-event-form">
+          <label for="globalEvent" class="global-event-query">海外事件或新聞標題
+            <input id="globalEvent" maxlength="180" required placeholder="例如：美國擴大 AI 晶片出口限制">
+          </label>
+          <details class="global-event-options">
+            <summary>補充查詢條件</summary>
+            <div class="global-research-form">
+              <label>海外公司<input id="globalCompany" maxlength="80" placeholder="例如 NVIDIA"></label>
+              <label>美股代號<input id="globalTicker" maxlength="12" placeholder="例如 NVDA"></label>
+              <label>指定檢視的台股<input id="globalTaiwanCodes" maxlength="40" placeholder="例如 2330、2317"></label>
+              <label>產業或供應鏈線索<input id="globalRelation" maxlength="160" placeholder="例如 先進製程、伺服器散熱"></label>
+            </div>
+          </details>
+          <div class="global-event-actions">
+            <label>比對方式<select id="globalAiProvider"><option value="sources">公開新聞比對</option><option value="gemini">Gemini 產業推論</option><option value="ollama">Ollama 產業推論</option></select></label>
+            <button id="globalResearchSubmit" type="submit" class="primary-button">找相關台股</button>
+          </div>
+          <label class="global-consent" hidden><input id="globalResearchConsent" type="checkbox">同意將事件、查詢條件、公開來源及公司名錄傳給所選模型。系統不會附上持倉資料。</label>
+        </form>
+        <div id="globalResearchStatus" class="trend-status" role="status" aria-live="polite"></div>
+        <div id="globalResearchResult" class="global-research-result" hidden></div>
+        <p class="global-source-note">新聞提及、產業推論與股價反應是不同的線索。請開啟原始來源核對。</p>
+      </section>
 
       <section id="assistant" class="content-card assistant-card"><div class="section-heading"><div><h2>詢問助理</h2><p class="news-intro">選擇網站主題，再詢問該功能或相關投資概念。</p></div><span id="assistantBadge" class="source-count">檢查助理設定…</span></div><div class="assistant-topic-row" id="assistantTopicRow"><label for="assistantTopic">詢問主題</label><select id="assistantTopic"><option value="general">一般問題</option><option value="overview">投資總覽</option><option value="holdings">我的持股</option><option value="ledger">交易與股利</option><option value="allocation">資產配置</option><option value="alerts">價格提醒</option><option value="events">公司事件</option><option value="journal">投資日誌</option><option value="insights">投資檢視</option><option value="trendAnalysis">技術趨勢分析</option><option value="holdingAnalysis">我的持股分析</option><option value="stockDesk">個股查詢／自選</option><option value="candidates">候選股篩選</option><option value="watchlist">價格觀察紀錄</option><option value="news">新聞與公司公告</option><option value="references">研究來源與文獻</option></select><small>只會傳送你選的標題，不會讀取該頁的持倉或其他資料。</small></div><div class="assistant-topic-row"><label for="assistantProvider">回答方式</label><select id="assistantProvider"><option value="ollama">Ollama</option><option value="gemini">Gemini（雲端模型）</option><option value="fugle">Fugle（固定行情與技術摘要）</option></select><small>Fugle 提供行情摘要。Ollama 與 Gemini 回答問題。</small></div><div class="assistant-topic-row"><label id="assistantSymbolLabel" for="assistantSymbol">股票代號（選填）</label><input id="assistantSymbol" form="assistantForm" type="text" inputmode="numeric" maxlength="6" placeholder="例如 2330"></div>
 <form id="assistantForm" class="assistant-form">
@@ -287,6 +311,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261126k"></script>
+  <script type="module" src="app.js?v=20261126l"></script>
 </body>
 </html>

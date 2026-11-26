@@ -817,31 +817,36 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     finally { button.disabled = false; button.textContent = '⌕ 搜尋新聞'; }
   }
   $('globalDemoFill').addEventListener('click', () => {
-    $('globalCompany').value = 'NVIDIA'; $('globalTicker').value = 'NVDA'; $('globalTaiwanCodes').value = '2330、2317'; $('globalRelation').value = 'AI 加速器、先進製程、伺服器供應鏈';
-    $('globalResearchStatus').textContent = '已填入 NVIDIA 與觀察台股。送出後會查詢最新可得的公開資料。';
-    $('globalCompany').focus();
+    $('globalEvent').value = 'NVIDIA AI 晶片出口限制';
+    for (const id of ['globalCompany', 'globalTicker', 'globalTaiwanCodes', 'globalRelation']) $(id).value = '';
+    $('globalResearchStatus').textContent = '已填入範例。送出後會查詢公開新聞。';
+    $('globalEvent').focus();
   });
   const updateGlobalResearchMode = () => {
     const sourcesOnly = $('globalAiProvider').value === 'sources';
     $('globalResearchConsent').closest('label').hidden = sourcesOnly;
     $('globalResearchConsent').checked = false;
-    $('globalResearchSubmit').textContent = sourcesOnly ? '查詢公開資料' : '分析產業與個股';
-    $('globalResearchStatus').textContent = sourcesOnly ? '可先查看海外新聞、SEC 申報與指定台股的歷史事件回放。' : '勾選同意後，才會將公開資料傳給所選模型整理。';
+    $('globalResearchStatus').textContent = sourcesOnly ? '以新聞標題比對上市櫃公司名稱，台股代號可留白。' : '模型可補充產業傳導，個股仍須有可核對的事件來源。';
   };
   $('globalAiProvider').addEventListener('change', updateGlobalResearchMode);
   updateGlobalResearchMode();
   $('globalResearchForm').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const provider = $('globalAiProvider').value, consent = $('globalResearchConsent').checked;
+    const selector = $('globalAiProvider'), button = $('globalResearchSubmit');
+    if (button.disabled) return;
+    const provider = selector.value, consent = $('globalResearchConsent').checked;
+    const query = { event: $('globalEvent').value.trim(), companyName: $('globalCompany').value.trim(),
+      ticker: $('globalTicker').value.trim(), taiwanCodes: $('globalTaiwanCodes').value.trim(), relation: $('globalRelation').value.trim() };
+    if (!query.event) { $('globalResearchStatus').textContent = '請輸入海外事件或新聞標題。'; $('globalEvent').focus(); return; }
     if (provider !== 'sources' && !consent) { $('globalResearchStatus').textContent = '請先閱讀並勾選資料傳送同意。'; $('globalResearchConsent').focus(); return; }
-    const button = $('globalResearchSubmit'); button.disabled = true; button.textContent = '查詢與整理中…'; $('globalResearchResult').hidden = true;
+    button.disabled = true; selector.disabled = true; button.textContent = '查詢與整理中…'; $('globalResearchResult').hidden = true;
     $('globalResearchConsent').checked = false;
-    $('globalResearchStatus').textContent = '正在搜尋海外新聞與申報資料，並比對上市櫃公司名單分析可能受影響的產業及個股。';
+    $('globalResearchStatus').textContent = '正在查詢新聞與上市櫃公司名錄…';
     try {
       const { data: sessionData } = await supabaseClient?.auth.getSession() || {};
       const headers = { 'Content-Type': 'application/json' };
       if (sessionData?.session?.access_token) headers.Authorization = `Bearer ${sessionData.session.access_token}`;
-      const response = await fetch('/api/international-research', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ companyName: $('globalCompany').value.trim(), ticker: $('globalTicker').value.trim(), taiwanCodes: $('globalTaiwanCodes').value.trim(), relation: $('globalRelation').value.trim(), provider, aiConsent: consent }) });
+      const response = await fetch('/api/international-research', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ ...query, provider, aiConsent: consent }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '國際事件查詢失敗，請稍後重試。');
       const research = data.research || {}, sec = research.sec || {};
@@ -850,38 +855,42 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       const newsItems = (research.headlines || []).map((item) => `<li><a href="${esc(webLink(item.link) || webLink(item.searchLink) || 'https://news.google.com/')}" target="_blank" rel="noopener noreferrer">${esc(item.title)}</a><small>${esc(item.publishedAt || '')} · ${esc(item.source || 'Google News')}${item.description ? ` · ${esc(item.description)}` : ''}</small></li>`).join('');
       const analysis = data.impactAnalysis || {}, impactStocks = analysis.stocks || [], industries = analysis.industries || [];
       const isSourceMode = data.provider === 'sources';
-      const modeLabel = isSourceMode ? '公開資料' : data.provider === 'ollama' ? 'Ollama' : 'Gemini';
+      const modeLabel = isSourceMode ? '公開新聞比對' : data.provider === 'ollama' ? '公開新聞比對與 Ollama 推論' : '公開新聞比對與 Gemini 推論';
       const replayStocks = [...new Map([...impactStocks, ...(analysis.requestedStocks || [])].map((item) => [item.code, item])).values()];
       const researchSources = new Map([
         ...(research.headlines || []).map((item, index) => [`N${index + 1}`, { title: item.title, url: item.link, date: item.publishedAt }]),
         ...(sec.filings || []).map((item, index) => [`F${index + 1}`, { title: `${item.form} ${item.date || ''} ${item.description || ''}`.trim(), url: item.url, date: item.date }]),
         ...(sec.financials || []).map((item, index) => [`M${index + 1}`, { title: `${item.label} ${item.end || ''}`.trim(), date: item.end }])
       ]);
-      const showEvidence = (evidence) => Array.isArray(evidence) && evidence.length ? `<div class="global-evidence"><b>引用來源（可點擊核對）</b>${evidence.map((id) => { const source = researchSources.get(id); if (!source) return ''; const label = `<span>${esc(id)}</span> ${esc(source.title)}${source.date ? ` · ${esc(source.date)}` : ''}`; return webLink(source.url) ? `<a href="${esc(webLink(source.url))}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : `<div class="global-evidence-text">${label}</div>`; }).join('')}</div>` : '<small class="global-evidence-missing">尚無可核對來源</small>';
-      const evidenceCoverage = (item) => {
-        const summary = item.evidenceSummary || {};
-        const count = Number(summary.count) || 0;
-        const types = Array.isArray(summary.types) ? summary.types : [];
-        return count ? `引用依據：${count} 則${types.length ? `（${types.map(esc).join('、')}）` : ''}` : '引用依據：無';
-      };
+      const showEvidence = (evidence) => Array.isArray(evidence) && evidence.length ? `<div class="global-evidence"><b>核對來源</b>${evidence.map((id) => { const source = researchSources.get(id); if (!source) return ''; const label = `${esc(source.title)}${source.date ? ` · ${esc(source.date)}` : ''}`; return webLink(source.url) ? `<a href="${esc(webLink(source.url))}" target="_blank" rel="noopener noreferrer">${label} ↗</a>` : `<div class="global-evidence-text">${label}</div>`; }).join('')}</div>` : '';
       const directionClass = (value) => value === '可能受惠' ? 'positive' : value === '可能承壓' ? 'negative' : 'uncertain';
-      const industryCards = industries.map((item) => `<article class="global-impact-industry"><header><b>${esc(item.name || '未分類產業')}</b><span title="模型自評的定性程度，不是機率">模型信心${esc(item.confidence || '未評估')}</span></header><p>${esc(item.impact || '')}</p><small>可能傳導：${esc(item.transmission || '資料不足')}</small><small>${evidenceCoverage(item)}</small>${showEvidence(item.evidence)}</article>`).join('');
+      const industryCards = industries.map((item) => `<article class="global-impact-industry"><header><b>${esc(item.name)}</b></header><p>${esc(item.impact || '')}</p><small>${esc(item.transmission)}</small>${showEvidence(item.evidence)}</article>`).join('');
       const impactStockCards = impactStocks.map((item) => {
-        const quote = item.quote, price = quote ? Number(quote.lastPrice ?? quote.closePrice ?? quote.previousClose) : Number(item.dailyClose);
-        const quoteDate = quote?.date || quote?.quoteUpdatedAt || quote?.lastUpdated || item.dailyDate || '';
-        const priceLabel = Number.isFinite(price) && price > 0 ? `NT$ ${price.toLocaleString('zh-TW')} · ${esc(quoteDate)} · ${esc(quote?.quoteSource || '最近收盤')}` : esc(item.quoteError || '目前無行情');
-        return `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge ${directionClass(item.impact)}">${esc(item.impact || '影響不明')}</span></header><small title="模型信心是定性自評，不是機率">${esc(item.market || '')} · ${priceLabel} · 模型信心${esc(item.confidence || '未評估')}</small><small>${evidenceCoverage(item)}</small><div class="global-pathway"><span>海外事件</span><i>→</i><span>${esc(item.industry || '相關產業')}</span><i>→</i><b>${esc(item.code)} ${esc(item.name || '')}</b></div><p>${esc(item.reason || '')}</p>${item.horizon ? `<small>觀察區間：${esc(item.horizon)}</small>` : ''}${showEvidence(item.evidence)}</article>`;
+        const price = Number(item.dailyClose);
+        const priceLabel = price > 0 ? ['收盤 ' + money(price), item.dailyDate].filter(Boolean).join(' · ') : '暫無收盤價';
+        const details = [['事件線索', item.fact], ['可能作用途徑', item.mechanism], ['仍待確認', item.uncertainty]]
+          .filter(([, value]) => value).map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('');
+        return `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge ${directionClass(item.impact)}">${esc(item.impact || '方向未定')}</span></header><small>${esc([item.connection === 'mention' ? '新聞標題提及' : '模型產業推論', item.industry, item.market, priceLabel, item.horizon].filter(Boolean).join(' · '))}</small><p>${esc(item.reason || '')}</p>${details ? `<dl class="global-impact-reason">${details}</dl>` : ''}${showEvidence(item.evidence)}</article>`;
       }).join('');
-      const requestedStockCards = (analysis.requestedStocks || []).map((item) => `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge uncertain">${esc(item.impact || '尚無足夠證據')}</span></header><small>${esc(item.market || '')} · 最近收盤 NT$ ${Number(item.dailyClose || 0).toLocaleString('zh-TW')} · ${esc(item.dailyDate || '')}</small><p>${esc(item.reason || '')}</p></article>`).join('');
+      const requestedStockCards = (analysis.requestedStocks || []).map((item) => `<article class="global-impact-stock"><header><b>${esc(item.code)} ${esc(item.name || '')}</b><span class="global-impact-badge uncertain">證據不足</span></header><p>${esc(item.reason || '')}</p></article>`).join('');
       const risks = (analysis.risks || []).map((risk) => `<li>${esc(risk)}</li>`).join('');
       const invalidCodes = (research.unrecognizedCodes || []).length ? `<p class="global-source-note">以下代號未出現在目前上市櫃個股名單：${esc(research.unrecognizedCodes.join('、'))}</p>` : '';
       const replayNews = (research.headlines || []).filter((item) => item.publishedAt && item.link).slice(0, 10);
       const replayPanel = replayStocks.length && replayNews.length ? `<section class="global-replay"><h3>歷史事件回放</h3><p>以台灣時間的新聞日期為準，比較第 5／20 個交易日收盤價。若當天開盤，當天算第 1 個交易日。</p><div class="global-replay-form"><label>事件新聞<select id="globalReplayNews">${replayNews.map((item, index) => `<option value="${index}">${esc(item.publishedAt)} · ${esc(item.title)}</option>`).join('')}</select></label><label>觀察台股<select id="globalReplayStock">${replayStocks.map((item) => `<option value="${esc(item.code)}">${esc(item.code)} ${esc(item.name)}</option>`).join('')}</select></label><button type="button" class="secondary-button" id="globalReplayRun">比較事件前後</button></div><div id="globalReplayResult" class="global-replay-result" aria-live="polite"></div></section>` : '';
-      $('globalResearchResult').innerHTML = `<div class="global-result-summary"><b>${esc(research.foreignCompany)}${research.ticker ? `（${esc(research.ticker)}）` : ''} · 國際事件研究</b><p>${esc(analysis.summary || '目前沒有足夠公開資料可做產業與個股推論。')}</p><small>整理方式：${modeLabel}${isSourceMode ? '' : ' · 個股關聯為研究推論'}</small></div>${replayPanel}${isSourceMode ? '' : `<section><h3>可能受影響的產業 · ${industries.length} 項</h3><div class="global-impact-grid">${industryCards || '<p>目前沒有足夠資料判斷受影響產業。請確認新聞與申報來源是否有資料。</p>'}</div></section><section><h3>有來源支持的相關台股 · ${impactStocks.length} 檔</h3><div class="global-impact-grid">${impactStockCards || '<p>目前沒有足夠證據確認相關個股，不會把手動輸入的股票直接當成受影響標的。</p>'}</div></section>`}${invalidCodes}${requestedStockCards ? `<section><h3>你指定檢視的股票（尚未確認與事件相關）</h3><div class="global-impact-grid">${requestedStockCards}</div></section>` : ''}${risks ? `<section><h3>仍需查證</h3><ul class="global-links">${risks}</ul></section>` : ''}<section><h3>SEC 財報與申報</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)} · 更新 ${esc(sec.updatedAt || '')}</p>${financials ? `<div class="global-metrics">${financials}</div>` : '<p>目前沒有可用的標準化財務欄位，請查看原始申報。</p>'}<ul class="global-links">${filings || '<li>目前沒有最近申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>${research.ticker ? `<a href="https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(research.ticker)}" target="_blank" rel="noopener noreferrer">在 SEC EDGAR 搜尋原始申報 ↗</a>` : ''}`}</section><section><h3>海外新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>Google News 目前沒有傳回相關文章。</li>'}</ul></section><small class="global-updated">資料查詢時間：${esc(research.generatedAt || '')} · 新聞為 Google News RSS，財報申報為 SEC EDGAR，台股名單為證交所與櫃買中心；報價優先 Fugle，無法取得時回退至 TWSE／TPEx 最近收盤資料。</small>`;
-      const confidenceNote = document.createElement('small');
-      confidenceNote.className = 'global-source-note';
-      confidenceNote.textContent = '模型信心是定性自評，不是機率；引用來源數量只表示模型引用了幾筆資料，不代表來源品質或因果證明。請點開來源自行核對。';
-      $('globalResearchResult').querySelector('.global-result-summary')?.append(confidenceNote);
+      const title = research.event || query.event;
+      const emptyStocks = isSourceMode
+        ? '本次新聞標題沒有比對到具名台股。可改用更具體的事件標題，或選擇模型查看間接影響。'
+        : '目前來源不足以判斷個股關聯。';
+      const optionalCompanySources = query.companyName || query.ticker;
+      $('globalResearchResult').innerHTML = `
+        <div class="global-result-summary"><h3>${esc(title)}</h3><p>${esc(analysis.summary || '目前沒有足夠資料判斷事件關聯。')}</p><small>${modeLabel}</small></div>
+        <section><h3>可能相關的台股 · ${impactStocks.length} 檔</h3>${impactStockCards ? `<div class="global-impact-grid">${impactStockCards}</div>` : `<p>${emptyStocks}</p>`}</section>
+        ${industryCards ? `<section><h3>可能影響的產業</h3><div class="global-impact-grid">${industryCards}</div></section>` : ''}
+        ${invalidCodes}${requestedStockCards ? `<section><h3>指定檢視 · 尚無關聯證據</h3><div class="global-impact-grid">${requestedStockCards}</div></section>` : ''}
+        ${risks ? `<section><h3>仍需查證</h3><ul class="global-links">${risks}</ul></section>` : ''}${replayPanel}
+        <section><h3>相關新聞 · ${esc(research.headlines?.length || 0)} 則</h3><ul class="global-links">${newsItems || '<li>目前找不到相關新聞。</li>'}</ul></section>
+        ${optionalCompanySources ? `<section><h3>SEC 申報與財務資料</h3>${sec.available ? `<p class="global-source-note">SEC EDGAR · ${esc(sec.company)}</p>${financials ? `<div class="global-metrics">${financials}</div>` : ''}<ul class="global-links">${filings || '<li>目前沒有近期申報文件。</li>'}</ul>` : `<p>${esc(sec.reason || '未取得 SEC 資料。')}</p>`}</section>` : ''}
+        <small class="global-updated">新聞來源 Google News RSS · 公司名錄及收盤資料 TWSE／TPEx · 查詢時間 ${esc(research.generatedAt ? new Date(research.generatedAt).toLocaleString('zh-TW') : '—')}</small>`;
       $('globalReplayRun')?.addEventListener('click', async () => {
         const replayButton = $('globalReplayRun'), resultNode = $('globalReplayResult');
         const newsIndex = Number($('globalReplayNews').value), selectedNews = replayNews[newsIndex], code = $('globalReplayStock').value;
@@ -903,10 +912,11 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
         finally { replayButton.disabled = false; replayButton.textContent = '比較事件前後'; }
       });
       $('globalResearchResult').hidden = false;
-      $('globalResearchStatus').textContent = data.warning || (research.headlines?.length || sec.available ? '已取得 ' + (research.headlines?.length || 0) + ' 則新聞' + (sec.available ? '與 SEC 申報資料。' : '。') : '目前未取得可用的公開來源。');
+      const incompleteNews = Number(research.newsStatus?.failedSearches) || 0;
+      $('globalResearchStatus').textContent = [data.warning, `取得 ${research.headlines?.length || 0} 則新聞，列出 ${impactStocks.length} 檔台股。`, incompleteNews ? '部分新聞查詢未成功。' : ''].filter(Boolean).join(' ');
       if (!isSourceMode) void refreshAssistantMetrics();
     } catch (error) { $('globalResearchStatus').textContent = error.message || '查詢失敗，請稍後再試。'; }
-    finally { button.disabled = false; button.textContent = $('globalAiProvider').value === 'sources' ? '查詢公開資料' : '分析產業與個股'; }
+    finally { button.disabled = false; selector.disabled = false; button.textContent = '找相關台股'; }
   });
   function openHolding(item, prefill = null) {
     $('holdingForm').reset(); $('holdingId').value = item?.id || ''; $('holdingDialogTitle').textContent = item ? '編輯持股' : '新增持股';
