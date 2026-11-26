@@ -1,4 +1,4 @@
-import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from './holding-image-import.js?v=20261126e';
+import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from './holding-image-import.js?v=20261126g';
 
 const allowedImages = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const maxFileBytes = 12 * 1024 * 1024;

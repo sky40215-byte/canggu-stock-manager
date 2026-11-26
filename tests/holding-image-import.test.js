@@ -22,6 +22,38 @@ test('uses PaddleOCR positions and confidence to fill the correct cells', () => 
   ]);
 });
 
+test('reads broker inventory with product name and code on separate lines', () => {
+  const rows = [
+    [20, [[0, '明细'], [110, '商品'], [240, '市場別'], [315, '庫存股數'], [430, '成交均價'], [540, '投資成本'], [640, '市價']]],
+    [53, [[110, '台積電']]],
+    [68, [[0, '明細'], [240, '上市'], [315, '1,200'], [430, '642.50'], [540, '771,000'], [640, '720']]],
+    [83, [[110, '2330']]],
+    [133, [[110, '元大台灣50']]],
+    [148, [[0, '明細'], [240, '上市'], [315, '500'], [430, '157.30'], [540, '78,650'], [640, '170.8']]],
+    [163, [[110, '0050']]]
+  ];
+  const items = rows.flatMap(([y, cells]) => cells.map(([x, text]) => ({
+    text, score: .96, poly: [[x, y], [x + 64, y], [x + 64, y + 18], [x, y + 18]]
+  })));
+  assert.deepEqual(readPaddleHoldingTable(items), [
+    { code: '2330', name: '台積電', shares: '1200', cost: '642.5', price: '720' },
+    { code: '0050', name: '元大台灣50', shares: '500', cost: '157.3', price: '170.8' }
+  ]);
+});
+
+test('distinguishes a transaction average from an inventory average', () => {
+  const transaction = makeTsv([
+    ['交易明細'],
+    ['商品', '成交股數', '成交均價', '成交金額'],
+    ['2330 台積電', '100', '720', '72,000']
+  ]);
+  assert.deepEqual(readHoldingTable(transaction), []);
+  assert.equal(readHoldingTable(makeTsv([
+    ['股票代號', '股數', '成交均價'],
+    ['2330 台積電', '20', '721']
+  ]))[0].cost, '');
+});
+
 test('reads a per-share cost and converts lots without taking values from adjacent columns', () => {
   const tsv = makeTsv([
     ['股票代號／名稱', '庫存(張)', '可賣股數', '總成本', '每股平均成本', '最新價'],

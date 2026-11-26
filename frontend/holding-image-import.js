@@ -2,11 +2,11 @@ const stockCodePattern = /(?<![A-Z0-9.-])\d{4,6}(?![A-Z0-9.-])/i;
 const headingPatterns = [
   ['stock', /(?:股票|證券|商品)?(?:代號|代碼)[\/、](?:股票|證券|商品)?名稱|(?:股票|證券)\((?:代號|代碼)[\/、]名稱\)/gu],
   ['code', /股票代號|證券代號|商品代號|代號|代碼/gu],
-  ['name', /股票名稱|證券名稱|商品名稱|標的名稱|股票[\/／]名稱|名稱|標的|股票|證券/gu],
+  ['name', /股票名稱|證券名稱|商品名稱|標的名稱|股票[\/／]名稱|名稱|標的|股票|證券|商品/gu],
   ['shares', /(?:(?:持有|持股|持倉|庫存)(?:股數|數量|數|餘額)|剩餘股數|股數|現股庫存|庫存)(?:\((?:千股|股|張)\)|千股|[股張])?/gu],
   ['cost', /每股(?:平均)?成本(?:價)?|平均(?:買進|買入)?成本(?:價)?|單位成本(?:價)?|成本均價|庫存均價|持有均價|持倉均價|買[進入]均價|平均買[進入]價|成本價|平均單價|均價/gu],
   ['price', /最新成交價|目前(?:市價|價格)|最新價格|最新價|現價|市價|成交價|參考價|收盤價/gu],
-  ['other', /(?:可賣|可售|委託)(?:庫存股數|庫存|股數|數量)?|(?:成交|買進|買入|賣出|交易)(?:股數|數量)|(?:成交|賣出|委託)均價|(?:投資|投入|買進|總|庫存)成本|成本金額|成本總額|成交金額|(?:預估)?(?:市值|損益|報酬率)|漲跌幅?|庫存種類|交易別|幣別|日期/gu]
+  ['other', /(?:可賣|可售|委託)(?:庫存股數|庫存|股數|數量)?|(?:成交|買進|買入|賣出|交易)(?:股數|數量)|(?:成交|賣出|委託)均價|(?:投資|投入|買進|總|庫存)成本|成本金額|成本總額|成交金額|(?:[預预]估)?(?:庫存淨值|庫存市值|市值|損益(?:金額)?|報酬率)|漲跌幅?|庫存種類|市場[別别]|交易[別别]|幣別|日期|下[單单]|閃電|明[細细]|利息/gu]
 ];
 const identityHeadings = new Set(['code', 'name', 'stock']);
 const cardPatterns = [...headingPatterns, ['shares', /持有|持股|持倉/gu]];
@@ -139,29 +139,71 @@ function readHoldingWords(words, quotes) {
   });
   if (start < 0) return readHoldingCards(rows, lines, quotes);
   const results = [];
-  let columns = headings[start];
+  let columns = inventoryColumns(headings[start]), entries = [];
   for (let i = start + 1; i < rows.length && results.length < maxImageHoldings; i++) {
     if (unrelatedSection.test(lines[i].text)) break;
     if (isTableHeader(headings[i])) {
-      columns = headings[i];
+      results.push(...mergeTableRows(entries).slice(0, maxImageHoldings - results.length));
+      entries = [];
+      columns = inventoryColumns(headings[i]);
       continue;
     }
-    const cells = columnWords(rows[i], columns);
+    const words = rows[i], cells = columnWords(words, columns);
     const identity = cells.flatMap((cell, j) => identityHeadings.has(columns[j].kind) ? cell : []);
     const label = identity.map((word) => word.text).join(' ');
     if (/^(?:合計|總計|小計|總覽|總市值|合計市值)(?:[：:]|$)/u.test(label.replace(/\s+/g, ''))) break;
     const code = identity.filter((word) => word.confidence >= 55).map((word) => word.text).join(' ').match(stockCodePattern)?.[0] || '';
-    const name = label.replace(stockCodePattern, '').replace(/(?<=\p{Script=Han})\s+(?=[\p{Script=Han}0-9])/gu, '').replace(/\s+/g, ' ').trim();
-    if (!code && !/\p{Script=Han}/u.test(name)) continue;
+    const nameText = label.replace(stockCodePattern, '').replace(/(?<=\p{Script=Han})\s+(?=[\p{Script=Han}0-9])/gu, '').replace(/\s+/g, ' ').trim();
+    const name = /\p{Script=Han}/u.test(nameText) ? nameText : '';
     const amount = (kind) => {
       const matching = columns.map((column, index) => column.kind === kind ? index : -1).filter((index) => index >= 0);
       return matching.length === 1 ? readAmount(cells[matching[0]], kind, columns[matching[0]].text) : '';
     };
     const shares = amount('shares'), cost = amount('cost'), price = amount('price');
-    if (!code && !shares && !cost) continue;
-    results.push({ code, name, shares, cost, price });
+    if (!code && !name && !shares && !cost) continue;
+    entries.push({
+      row: { code, name, shares, cost, price },
+      y: words.reduce((sum, word) => sum + word.y, 0) / words.length,
+      height: Math.max(...words.map((word) => word.height)),
+      labelOnly: identity.length === words.length
+    });
   }
+  results.push(...mergeTableRows(entries).slice(0, maxImageHoldings - results.length));
   return results.length ? results : readHoldingCards(rows, lines, quotes);
+}
+
+function inventoryColumns(columns) {
+  const inventory = columns.some(({ kind, text }) => kind === 'shares' && /^(?:庫存|持有|持股|持倉)/u.test(text));
+  if (!inventory || columns.some(({ kind }) => kind === 'cost')) return columns;
+  return columns.map((column) => column.text === '成交均價' ? { ...column, kind: 'cost' } : column);
+}
+
+function mergeTableRows(entries) {
+  const anchors = entries.filter(({ row }) => row.shares || row.cost);
+  const supplemental = new Map(), joined = new Set();
+  for (const entry of entries) {
+    const { row, labelOnly, y, height } = entry;
+    if (!labelOnly || (!row.code && !row.name) || row.shares || row.cost || row.price) continue;
+    const nearby = anchors.filter((anchor) => Math.abs(anchor.y - y) <= Math.max(height, anchor.height) * 1.35)
+      .sort((a, b) => Math.abs(a.y - y) - Math.abs(b.y - y));
+    const [closest, second] = nearby;
+    if (!closest || (second && Math.abs(second.y - y) - Math.abs(closest.y - y) < height * .3)) continue;
+    if ((closest.row.code && row.code && closest.row.code !== row.code) ||
+      (closest.row.name && row.name && nameKey(closest.row.name) !== nameKey(row.name))) continue;
+    if (!supplemental.has(closest)) supplemental.set(closest, []);
+    supplemental.get(closest).push(row);
+    joined.add(entry);
+  }
+  return entries.flatMap((entry) => {
+    if (joined.has(entry)) return [];
+    const extra = supplemental.get(entry) || [];
+    const unique = (field) => {
+      const values = new Set(extra.map((row) => row[field]).filter(Boolean));
+      return values.size === 1 ? values.values().next().value : '';
+    };
+    const row = { ...entry.row, code: entry.row.code || unique('code'), name: entry.row.name || unique('name') };
+    return (row.code || row.name) && (row.code || row.shares || row.cost) ? [row] : [];
+  });
 }
 
 const trimCardValue = (value) => value.replace(/^[\s:|｜、,;]+|[\s:|｜、,;]+$/gu, '');
