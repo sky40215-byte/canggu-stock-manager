@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { matchHoldingNames, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from '../frontend/holding-image-import.js';
+import { matchHoldingNames, parseTradeDate, readHoldingTable, readPaddleHoldingTable, readPaddleTradeTable, reviewImageHoldings } from '../frontend/holding-image-import.js';
 
 function makeTsv(rows) {
   return rows.flatMap((columns, row) => columns.map((text, column) =>
@@ -20,6 +20,33 @@ test('uses PaddleOCR positions and confidence to fill the correct cells', () => 
   assert.deepEqual(readPaddleHoldingTable(items), [
     { code: '0050', name: '元大台灣50', shares: '1001', cost: '', price: '170.8' }
   ]);
+  const [holding] = readPaddleHoldingTable(items, new Map(), { width: 800, height: 200 });
+  assert.deepEqual(holding.evidence.code, [0, 32 / 200, 92 / 800, 52 / 200]);
+  assert.equal(holding.evidence.cost, undefined);
+});
+
+test('reads a Taiwanese trade statement and excludes order amounts and cancelled rows', () => {
+  const rows = [
+    [0, ['成交日期', '商品', '買賣別', '成交股數', '委託單價', '成交均價', '手續費', '交易稅', '狀態']],
+    [32, ['115/11/24', '台積電', '現股買進', '125', '800', '751.50', '17', '0', '已成交']],
+    [47, ['', '2330']],
+    [72, ['2026-11-25', '0050 元大台灣50', '賣出', '23', '158', '157', '8', '4', '已成交']],
+    [104, ['2026-11-25', '2303 聯電', '買進', '10', '42', '42', '1', '0', '已取消']],
+    [136, ['合計', '', '', '158', '', '', '26', '4']]
+  ];
+  const items = rows.flatMap(([top, columns]) => columns.flatMap((text, column) => {
+    const left = column * 140;
+    return text ? [{ text, score: .96, poly: [[left, top], [left + 98, top], [left + 98, top + 18], [left, top + 18]] }] : [];
+  }));
+  const trades = readPaddleTradeTable(items, { width: 1260, height: 200 });
+  assert.deepEqual(trades.map(({ evidence, ...row }) => row), [
+    { code: '2330', name: '台積電', type: 'buy', date: '2026-11-24', shares: '125', price: '751.5', fees: '17', tax: '0' },
+    { code: '0050', name: '元大台灣50', type: 'sell', date: '2026-11-25', shares: '23', price: '157', fees: '8', tax: '4' }
+  ]);
+  assert.deepEqual(trades[0].evidence.code, [140 / 1260, 47 / 200, 238 / 1260, 65 / 200]);
+  assert.deepEqual(trades[0].evidence.price, [700 / 1260, 32 / 200, 798 / 1260, 50 / 200]);
+  assert.equal(parseTradeDate('民國115年11月25日'), '2026-11-25');
+  assert.equal(parseTradeDate('2026-02-29'), '');
 });
 
 test('reads broker inventory with product name and code on separate lines', () => {
@@ -39,6 +66,9 @@ test('reads broker inventory with product name and code on separate lines', () =
     { code: '2330', name: '台積電', shares: '1200', cost: '642.5', price: '720' },
     { code: '0050', name: '元大台灣50', shares: '500', cost: '157.3', price: '170.8' }
   ]);
+  const [holding] = readPaddleHoldingTable(items, new Map(), { width: 800, height: 200 });
+  assert.deepEqual(holding.evidence.code, [110 / 800, 83 / 200, 174 / 800, 101 / 200]);
+  assert.deepEqual(holding.evidence.cost, [430 / 800, 68 / 200, 494 / 800, 86 / 200]);
 });
 
 test('distinguishes a transaction average from an inventory average', () => {

@@ -109,12 +109,23 @@ function parseAmount(value, kind, heading, requireUnit = false) {
   return String(number);
 }
 
-export function readHoldingTable(tsv, quotes = new Map()) {
-  return readHoldingWords(tsvWords(tsv), quotes);
+function sourceBox(words, dimensions) {
+  if (!dimensions || !words.length) return undefined;
+  const { width, height } = dimensions;
+  return [
+    Math.max(0, Math.min(...words.map((word) => word.x)) / width),
+    Math.max(0, Math.min(...words.map((word) => word.y - word.height / 2)) / height),
+    Math.min(1, Math.max(...words.map((word) => word.x + word.width)) / width),
+    Math.min(1, Math.max(...words.map((word) => word.y + word.height / 2)) / height)
+  ];
 }
 
-export function readPaddleHoldingTable(items, quotes = new Map()) {
-  const words = items.flatMap(({ text, poly, score }) => {
+export function readHoldingTable(tsv, quotes = new Map(), dimensions) {
+  return readHoldingWords(tsvWords(tsv), quotes, dimensions);
+}
+
+function paddleWords(items) {
+  return items.flatMap(({ text, poly, score }) => {
     if (!text || !Array.isArray(poly) || poly.length < 4 || !Number.isFinite(score)) return [];
     const x = poly.map((point) => point[0]), y = poly.map((point) => point[1]);
     const left = Math.min(...x), top = Math.min(...y);
@@ -122,10 +133,13 @@ export function readPaddleHoldingTable(items, quotes = new Map()) {
     if (!(width > 0) || !(height > 0)) return [];
     return [{ text: normalize(text), x: left, y: top + height / 2, width, height, confidence: score * 100 }];
   });
-  return readHoldingWords(words, quotes);
 }
 
-function readHoldingWords(words, quotes) {
+export function readPaddleHoldingTable(items, quotes = new Map(), dimensions) {
+  return readHoldingWords(paddleWords(items), quotes, dimensions);
+}
+
+function readHoldingWords(words, quotes, dimensions) {
   const rows = wordRows(words);
   const lines = rows.map(describeLine);
   const headings = lines.map((line) => /\d/.test(line.text) ? [] : findHeadings(line));
@@ -137,7 +151,7 @@ function readHoldingWords(words, quotes) {
     if (holdingSection.test(lines[index].text)) skipSection = false;
     return !skipSection && isTableHeader(columns);
   });
-  if (start < 0) return readHoldingCards(rows, lines, quotes);
+  if (start < 0) return readHoldingCards(rows, lines, quotes, dimensions);
   const results = [];
   let columns = inventoryColumns(headings[start]), entries = [];
   for (let i = start + 1; i < rows.length && results.length < maxImageHoldings; i++) {
@@ -155,21 +169,28 @@ function readHoldingWords(words, quotes) {
     const code = identity.filter((word) => word.confidence >= 55).map((word) => word.text).join(' ').match(stockCodePattern)?.[0] || '';
     const nameText = label.replace(stockCodePattern, '').replace(/(?<=\p{Script=Han})\s+(?=[\p{Script=Han}0-9])/gu, '').replace(/\s+/g, ' ').trim();
     const name = /\p{Script=Han}/u.test(nameText) ? nameText : '';
+    const evidence = {};
+    if (code) evidence.code = sourceBox(identity.filter((word) => word.text.includes(code)), dimensions);
+    if (name) evidence.name = sourceBox(identity.filter((word) => /\p{Script=Han}/u.test(word.text)), dimensions);
     const amount = (kind) => {
       const matching = columns.map((column, index) => column.kind === kind ? index : -1).filter((index) => index >= 0);
-      return matching.length === 1 ? readAmount(cells[matching[0]], kind, columns[matching[0]].text) : '';
+      if (matching.length !== 1) return '';
+      const cell = cells[matching[0]];
+      const value = readAmount(cell, kind, columns[matching[0]].text);
+      if (value) evidence[kind] = sourceBox(cell, dimensions);
+      return value;
     };
     const shares = amount('shares'), cost = amount('cost'), price = amount('price');
     if (!code && !name && !shares && !cost) continue;
     entries.push({
-      row: { code, name, shares, cost, price },
+      row: { code, name, shares, cost, price, ...(dimensions && { evidence }) },
       y: words.reduce((sum, word) => sum + word.y, 0) / words.length,
       height: Math.max(...words.map((word) => word.height)),
       labelOnly: identity.length === words.length
     });
   }
   results.push(...mergeTableRows(entries).slice(0, maxImageHoldings - results.length));
-  return results.length ? results : readHoldingCards(rows, lines, quotes);
+  return results.length ? results : readHoldingCards(rows, lines, quotes, dimensions);
 }
 
 function inventoryColumns(columns) {
@@ -178,8 +199,8 @@ function inventoryColumns(columns) {
   return columns.map((column) => column.text === '成交均價' ? { ...column, kind: 'cost' } : column);
 }
 
-function mergeTableRows(entries) {
-  const anchors = entries.filter(({ row }) => row.shares || row.cost);
+function mergeTableRows(entries, isAnchor = ({ row }) => row.shares || row.cost) {
+  const anchors = entries.filter(isAnchor);
   const supplemental = new Map(), joined = new Set();
   for (const entry of entries) {
     const { row, labelOnly, y, height } = entry;
@@ -202,7 +223,12 @@ function mergeTableRows(entries) {
       return values.size === 1 ? values.values().next().value : '';
     };
     const row = { ...entry.row, code: entry.row.code || unique('code'), name: entry.row.name || unique('name') };
-    return (row.code || row.name) && (row.code || row.shares || row.cost) ? [row] : [];
+    if (row.evidence) {
+      for (const field of ['code', 'name']) {
+        if (!entry.row[field] && row[field]) row.evidence[field] = extra.find((item) => item[field] === row[field])?.evidence?.[field];
+      }
+    }
+    return (row.code || row.name) && (row.code || isAnchor(entry)) ? [row] : [];
   });
 }
 
@@ -226,22 +252,26 @@ function cardIdentity(words, captions, quotes, codesByName) {
   return matchedCode ? { code: matchedCode, name } : null;
 }
 
-function cardValue(captions, index, line, nextRow, next, anchor, height) {
+function cardValue(captions, index, line, row, nextRow, next, anchor, height, dimensions) {
   const caption = captions[index];
   const start = caption.start + caption.text.length;
   const end = captions[index + 1]?.start ?? line.text.length;
-  if (line.characters.slice(caption.start, start).some(({ confidence }) => confidence < 55)) return '';
+  if (line.characters.slice(caption.start, start).some(({ confidence }) => confidence < 55)) return {};
   const printed = trimCardValue(line.text.slice(start, end));
   if (printed) {
-    if (line.characters.slice(caption.start, end).some(({ confidence }) => confidence < 55)) return '';
-    return parseAmount(printed, caption.kind, caption.text, caption.kind === 'shares');
+    if (line.characters.slice(caption.start, end).some(({ confidence }) => confidence < 55)) return {};
+    const firstX = line.characters[start].x, lastX = line.characters[end - 1].x;
+    return {
+      value: parseAmount(printed, caption.kind, caption.text, caption.kind === 'shares'),
+      box: sourceBox(row.filter((word) => word.x <= lastX && word.x + word.width >= firstX), dimensions)
+    };
   }
-  if (!nextRow?.length || !next || next.captions.length || next.identity || nextRow[0].y - anchor.y > height * 3) return '';
+  if (!nextRow?.length || !next || next.captions.length || next.identity || nextRow[0].y - anchor.y > height * 3) return {};
   const sameColumn = columnWords(nextRow, captions)[index].filter((word) => Math.abs(word.x + word.width / 2 - caption.center) <= height * 2);
-  return readAmount(sameColumn, caption.kind, caption.text, caption.kind === 'shares');
+  return { value: readAmount(sameColumn, caption.kind, caption.text, caption.kind === 'shares'), box: sourceBox(sameColumn, dimensions) };
 }
 
-function readHoldingCards(rows, lines, quotes) {
+function readHoldingCards(rows, lines, quotes, dimensions) {
   const codesByName = new Map();
   for (const [code, quote] of quotes) {
     if (!isTaiwanImportCode(code) || !quote.name) continue;
@@ -256,9 +286,14 @@ function readHoldingCards(rows, lines, quotes) {
   let current = null, inHoldings = false, unrelated = false;
   function finalize() {
     if (current?.quantityLabel) {
-      const { code, name, fields } = current;
-      const field = (kind) => fields[kind].size === 1 ? [...fields[kind]][0] : '';
-      cards.push({ code, name, shares: field('shares'), cost: field('cost'), price: field('price') });
+      const { code, name, fields, evidence } = current;
+      const field = (kind) => fields[kind].size === 1 ? [...fields[kind].keys()][0] : '';
+      const row = { code, name, shares: field('shares'), cost: field('cost'), price: field('price') };
+      if (dimensions) {
+        for (const kind of cardFieldNames) if (row[kind]) evidence[kind] = fields[kind].get(row[kind]);
+        row.evidence = evidence;
+      }
+      cards.push(row);
     }
     current = null;
   }
@@ -274,7 +309,14 @@ function readHoldingCards(rows, lines, quotes) {
     if (identity || (current && anchor.y - current.y > current.height * 12)) finalize();
     if (cards.length >= maxImageHoldings) break;
     if (identity && !identity.ambiguous) {
-      current = { ...identity, y: anchor.y, height, quantityLabel: false, fields: { shares: new Set(), cost: new Set(), price: new Set() } };
+      current = {
+        ...identity, y: anchor.y, height, quantityLabel: false,
+        fields: { shares: new Map(), cost: new Map(), price: new Map() },
+        evidence: {
+          code: sourceBox(rows[i].filter((word) => word.text.includes(identity.code)), dimensions),
+          name: sourceBox(rows[i].filter((word) => word.text.includes(identity.name)), dimensions)
+        }
+      };
       continue;
     }
     if (!current) continue;
@@ -282,8 +324,8 @@ function readHoldingCards(rows, lines, quotes) {
       if (!cardFieldNames.has(caption.kind)) return;
       if (caption.kind === 'shares' && !inHoldings && /^股數(?:\(|[股張]|千股|$)/u.test(caption.text)) return;
       if (caption.kind === 'shares') current.quantityLabel = true;
-      const value = cardValue(captions, index, line, rows[i + 1], entries[i + 1], anchor, height);
-      if (value) current.fields[caption.kind].add(value);
+      const { value, box } = cardValue(captions, index, line, rows[i], rows[i + 1], entries[i + 1], anchor, height, dimensions);
+      if (value && !current.fields[caption.kind].has(value)) current.fields[caption.kind].set(value, box);
     });
   }
   if (cards.length < maxImageHoldings) finalize();
@@ -336,4 +378,95 @@ export function reviewImageHoldings(drafts, holdings, quotes) {
     if (!quote && isTaiwanImportCode(code)) notes.push('目前行情未能核對此代號');
     return { code, name, shares, cost, price, quote, existing, issues, notes };
   });
+}
+
+const tradeHeadings = [
+  ...headingPatterns.filter(([kind]) => identityHeadings.has(kind)),
+  ['date', /成交日期|交易日期|成交日|交易日|日期/gu],
+  ['type', /買賣方向|買賣別|交易方向|成交方向|買賣|方向/gu],
+  ['shares', /(?:成交股數|成交數量|成交量|股數|數量)(?:\((?:千股|股|張)\)|千股|[股張])?/gu],
+  ['price', /成交平均價|成交均價|成交單價|成交價格|成交價|單價/gu],
+  ['fees', /手續費|佣金/gu],
+  ['tax', /證券交易稅|證交稅|交易稅|稅額/gu],
+  ['other', /委託日期|委託單價|委託價格|委託數量|委託股數|委託狀態|成交時間|交易別|市場別|交易方式|買賣金額|成交金額|應收付[金款]額|交割[金款]額|單號|序號|狀態|時間|幣別/gu]
+];
+
+export function parseTradeDate(value) {
+  const match = normalize(value).replace(/\s+/gu, '').replace(/^民國/u, '')
+    .match(/^(\d{2,4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/u);
+  if (!match) return '';
+  const year = Number(match[1]) + (match[1].length < 4 ? 1911 : 0);
+  const date = [year, match[2].padStart(2, '0'), match[3].padStart(2, '0')].join('-');
+  const parsed = new Date(date);
+  return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === date ? date : '';
+}
+
+export function readPaddleTradeTable(items, dimensions) {
+  const rows = wordRows(paddleWords(items));
+  const results = [];
+  let entries = [];
+  let columns = null, statementDate = '', statementDateBox;
+  const finishTable = () => {
+    results.push(...mergeTableRows(entries, ({ row }) => row.shares || row.price)
+      .filter((row) => row.shares || row.price).slice(0, maxImageHoldings - results.length));
+    entries = [];
+  };
+  for (const words of rows) {
+    if (results.length >= maxImageHoldings) break;
+    const line = describeLine(words);
+    if (/^(?:合計|總計|小計)/u.test(line.text)) { finishTable(); columns = null; continue; }
+    const found = findHeadings(line, tradeHeadings);
+    const has = (kind) => found.some((column) => column.kind === kind);
+    if (found.some((column) => identityHeadings.has(column.kind)) && has('type') && has('shares') && has('price')) {
+      finishTable();
+      columns = found;
+      continue;
+    }
+    const dated = line.text.match(/^(?:成交日期|交易日期|成交日|交易日)[:：]?((?:民國)?\d{2,4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)$/u);
+    if (dated) {
+      statementDate = parseTradeDate(dated[1]);
+      statementDateBox = sourceBox(words, dimensions);
+      continue;
+    }
+    if (!columns || /未成交|部分成交|待成交|已取消|已撤單|委託失敗/u.test(line.text)) continue;
+    const cells = columnWords(words, columns);
+    const identity = cells.flatMap((cell, index) => identityHeadings.has(columns[index].kind) ? cell : [])
+      .filter((word) => word.confidence >= 55);
+    const label = identity.map((word) => word.text).join(' ');
+    const code = label.match(stockCodePattern)?.[0] || '';
+    const name = label.replace(stockCodePattern, '').replace(/\s+/gu, '').replace(/^[()：:]+|[()：:]+$/gu, '');
+    const evidence = {};
+    const read = (kind, parser) => {
+      const index = columns.findIndex((column) => column.kind === kind);
+      if (index < 0 || !cells[index].length || cells[index].some((word) => word.confidence < 55)) return '';
+      const value = parser(cells[index].map((word) => word.text).join(' '), columns[index].text);
+      if (value !== '') evidence[kind] = sourceBox(cells[index], dimensions);
+      return value;
+    };
+    const shares = read('shares', (value, heading) => parseAmount(value, 'shares', heading));
+    const price = read('price', (value) => parseAmount(value, 'price', ''));
+    const type = read('type', (value) => {
+      const compact = value.replace(/\s+/gu, '');
+      if (/^(?:現股|現|零股|盤中零股|盤後零股)?買(?:進|入)?$/u.test(compact)) return 'buy';
+      if (/^(?:現股|現|零股|盤中零股|盤後零股)?賣(?:出)?$/u.test(compact)) return 'sell';
+      return '';
+    });
+    const validName = /\p{Script=Han}/u.test(name) ? name : '';
+    const labelOnly = identity.length === words.length;
+    if (labelOnly ? !code && !validName : ((!shares && !price) || (!code && !validName && !(shares && price && type)))) continue;
+    const date = read('date', parseTradeDate) || (columns.some((column) => column.kind === 'date') ? '' : statementDate);
+    if (date && !evidence.date) evidence.date = statementDateBox;
+    if (code) evidence.code = sourceBox(identity.filter((word) => word.text.includes(code)), dimensions);
+    if (name) evidence.name = sourceBox(identity.filter((word) => /\p{Script=Han}/u.test(word.text)), dimensions);
+    const fees = read('fees', (value) => parseAmount(value, 'fees', ''));
+    const tax = read('tax', (value) => parseAmount(value, 'tax', ''));
+    entries.push({
+      row: { code, name: validName, type, date, shares, price, fees, tax, evidence },
+      y: words.reduce((sum, word) => sum + word.y, 0) / words.length,
+      height: Math.max(...words.map((word) => word.height)),
+      labelOnly
+    });
+  }
+  finishTable();
+  return results;
 }

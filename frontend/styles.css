@@ -388,6 +388,27 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
   background: #f3f6f6;
 }
 .holding-import-picture img { display: block; width: 100%; }
+.holding-import-image-frame { position: relative; }
+.holding-import-highlight {
+  position: absolute;
+  outline: 2px solid #9a4406;
+  background: rgba(255, 181, 47, .22);
+  pointer-events: none;
+}
+.holding-import-review figure select { width: 100%; min-width: 0; margin: 0; }
+.holding-import-review figure small,
+.holding-import-trade-options small { color: var(--muted, #536a73); font-size: 12px; }
+.holding-import-trade-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.holding-import-trade-options input[type="checkbox"] { width: auto; margin: 0; }
+.holding-import-trades .holding-import-table table { min-width: 760px; }
+.holding-import-trades .holding-import-table th:nth-child(2),
+.holding-import-trades .holding-import-table th:last-child { width: 14%; }
+.ledger-heading-actions { flex-wrap: wrap; }
 .holding-import-grid {
   display: grid;
   justify-items: start;
@@ -444,6 +465,7 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
   .holding-import-picture { max-height: 30vh; }
   .holding-import-table { max-height: none; }
   .holding-import-table table, .holding-import-table tbody { display: block; min-width: 0; }
+  .holding-import-trades .holding-import-table table { min-width: 0; }
   .holding-import-table thead {
     position: absolute;
     width: 1px;

@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261126b">
+  <link rel="stylesheet" href="styles.css?v=20261126h">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
@@ -49,7 +49,7 @@
         <article class="summary-card"><div class="card-label">持倉市值 <span class="label-icon">◉</span></div><div class="metric" id="marketValue">NT$ 0</div><div class="card-note" id="marketValueBasis">依持股行情或備用價格估算</div></article>
         <article class="summary-card"><div class="card-label">投入成本 <span class="label-icon">▧</span></div><div class="metric" id="costValue">NT$ 0</div><div class="card-note">持有股數 × 平均成本</div></article>
         <article class="summary-card"><div class="card-label">未實現損益 <span class="label-icon">⌁</span></div><div class="metric" id="totalPnl">NT$ 0</div><div class="pnl-foot"><span id="totalPnlPct" class="pnl-pill">0.00%</span><span id="pnlBasis">依輸入價格估算</span></div></article>
-        <article class="summary-card" data-tw-only><div class="card-label">台股已實現損益 <span class="label-icon">↗</span></div><div class="metric" id="realizedPnl">NT$ 0</div><div class="card-note">依台股交易紀錄扣除手續費與稅</div></article>
+        <article class="summary-card" data-tw-only><div class="card-label">台股已實現損益 <span class="label-icon">↗</span></div><div class="metric" id="realizedPnl">NT$ 0</div><div class="card-note" id="realizedPnlNote">依台股交易紀錄扣除手續費與稅</div></article>
         <article class="summary-card" data-tw-only><div class="card-label">台股累計股利 <span class="label-icon">＄</span></div><div class="metric" id="dividendTotal">NT$ 0</div><div class="card-note">依股利紀錄扣除所填費用與稅</div></article>
       </section>
 
@@ -89,7 +89,7 @@
         <div class="table-footnote"><span class="info-dot">i</span> 市值與損益為估算值；交易紀錄會扣手續費、交易稅，股利另行累計。</div>
       </section>
 
-      <section id="ledger" class="content-card feature-card"><div class="section-heading"><div><div class="eyebrow">TRADES & DIVIDENDS</div><h2>交易與股利紀錄</h2><p class="news-intro">記錄台股的買進、賣出與股利，並更新持股數量和平均成本。</p></div><button class="secondary-button" id="addTransaction">＋ 新增交易／股利</button></div><div class="ledger-filters"><label>交易類型<select id="ledgerTypeFilter"><option value="">全部</option><option value="buy">買進</option><option value="sell">賣出</option><option value="dividend">股利</option></select></label><label>股票<input id="ledgerTextFilter" type="search" placeholder="搜尋代號或名稱" maxlength="80"></label></div><div class="table-wrap"><table class="feature-table"><thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>價格／每股股利</th><th>費用</th><th>損益／股利</th></tr></thead><tbody id="transactionsBody"></tbody></table><div id="emptyTransactions" class="empty-state"><b>還沒有交易紀錄</b><p>初始持股可先用「新增持股」建立，再記錄之後的交易。</p></div></div></section>
+      <section id="ledger" class="content-card feature-card"><div class="section-heading"><div><div class="eyebrow">TRADES & DIVIDENDS</div><h2>交易與股利紀錄</h2><p class="news-intro">記錄台股的買進、賣出與股利，並更新持股數量和平均成本。</p></div><div class="heading-actions ledger-heading-actions"><button class="secondary-button" id="openTradeImport" type="button">從截圖匯入成交</button><button class="secondary-button" id="addTransaction" type="button">＋ 新增交易／股利</button></div></div><div class="ledger-filters"><label>交易類型<select id="ledgerTypeFilter"><option value="">全部</option><option value="buy">買進</option><option value="sell">賣出</option><option value="dividend">股利</option></select></label><label>股票<input id="ledgerTextFilter" type="search" placeholder="搜尋代號或名稱" maxlength="80"></label></div><div class="table-wrap"><table class="feature-table"><thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>價格／每股股利</th><th>費用</th><th>損益／股利</th></tr></thead><tbody id="transactionsBody"></tbody></table><div id="emptyTransactions" class="empty-state"><b>還沒有交易紀錄</b><p>初始持股可先用「新增持股」建立，再記錄之後的交易。</p></div></div></section>
 
       <section id="allocation" class="content-card feature-card"><div class="section-heading"><div><div class="eyebrow">TARGET ALLOCATION</div><h2>目標配置檢視</h2><p class="news-intro">設定台股的目標比例，查看目前市值與目標的差距。</p></div></div><div id="allocationContent" class="allocation-list"></div></section>
 
@@ -133,11 +133,11 @@
   <dialog id="holdingImportDialog" class="modal holding-import-modal" aria-labelledby="holdingImportTitle">
     <form id="holdingImportForm" method="dialog" novalidate>
       <div class="modal-heading">
-        <div><h2 id="holdingImportTitle">從截圖匯入持股</h2><p>選擇台股券商的庫存截圖或照片。核對股數與每股平均成本後，即可匯入「我的持股」。</p></div>
+        <div><h2 id="holdingImportTitle">從截圖匯入持股</h2><p id="holdingImportIntro">選擇台股券商的庫存截圖或照片。核對股數與每股平均成本後，即可匯入「我的持股」。</p></div>
         <button type="button" class="close-button" data-close="holdingImportDialog" aria-label="關閉截圖匯入">×</button>
       </div>
       <div class="holding-import-upload">
-        <input id="holdingImportFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <input id="holdingImportFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <button class="secondary-button" id="holdingImportChoose" type="button" autofocus>選擇截圖</button>
         <small id="holdingImportFileName">PNG、JPG 或 WebP，上限 12 MB。預設在此裝置進行文字辨識。</small>
         <button class="secondary-button" id="holdingImportPaddle" type="button" aria-describedby="holdingImportPaddleHint" hidden>用 PaddleOCR 在裝置辨識</button>
@@ -158,17 +158,23 @@
       <div class="holding-import-review" id="holdingImportReview" hidden>
         <figure>
           <figcaption>原始截圖 <button id="holdingImportZoom" class="text-button" type="button" aria-pressed="false">放大截圖</button></figcaption>
-          <div class="holding-import-picture"><img id="holdingImportImage" alt="待核對的持股截圖"></div>
+          <select id="holdingImportSource" aria-label="選擇原始截圖"></select>
+          <div class="holding-import-picture"><div class="holding-import-image-frame" id="holdingImportFrame"><img id="holdingImportImage" alt="待核對的券商截圖"><span class="holding-import-highlight" id="holdingImportHighlight" aria-hidden="true" hidden></span></div></div>
+          <small id="holdingImportEvidenceHint" aria-live="polite"></small>
         </figure>
         <div class="holding-import-grid" id="holdingImportGrid">
           <div class="holding-import-table">
-            <table aria-label="核對匯入持股">
-              <thead><tr><th scope="col">代號</th><th scope="col">名稱</th><th scope="col">股數</th><th scope="col">均價／股</th><th scope="col">備用價</th><th scope="col">處理方式</th></tr></thead>
+            <table aria-label="核對匯入資料">
+              <thead><tr id="holdingImportHead"></tr></thead>
               <tbody id="holdingImportRows"></tbody>
             </table>
           </div>
           <button class="secondary-button" id="holdingImportAddRow" type="button">＋ 補一筆</button>
-          <small>金額以新台幣為單位。備用價可留空，有收盤行情時會優先使用行情。</small>
+          <small id="holdingImportReviewHint">備用價可留空，有收盤行情時會優先使用行情。</small>
+          <div id="holdingImportTradeOptions" class="holding-import-trade-options" hidden>
+            <label><input type="checkbox" id="holdingImportApplyTrades"> 同時更新目前持股與損益</label>
+            <small>預設只新增成交紀錄。確認這些成交尚未計入持股，再勾選更新。</small>
+          </div>
         </div>
       </div>
       <div class="modal-actions holding-import-actions">
@@ -186,6 +192,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261126g"></script>
+  <script type="module" src="app.js?v=20261126h"></script>
 </body>
 </html>

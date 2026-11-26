@@ -2,7 +2,7 @@ import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.j
 import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
-import { mountHoldingImport } from './holding-import-dialog.js?v=20261126g';
+import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
 
 (() => {
   'use strict';
@@ -240,6 +240,8 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126g';
     const realized = state.transactions.filter((row) => row.type === 'sell').reduce((sum, row) => sum + num(row.realizedPnl), 0);
     const dividends = state.transactions.filter((row) => row.type === 'dividend').reduce((sum, row) => sum + netDividend(row), 0);
     $('realizedPnl').textContent = money(realized); $('realizedPnl').className = `metric ${realized < 0 ? 'negative' : realized > 0 ? 'positive' : ''}`; $('dividendTotal').textContent = money(dividends);
+    const uncostedSales = state.transactions.filter((row) => row.type === 'sell' && row.recordOnly).length;
+    $('realizedPnlNote').textContent = uncostedSales ? `有 ${uncostedSales} 筆賣出僅存紀錄，尚未計入` : '依台股交易紀錄扣除手續費與稅';
     renderOverviewHoldings();
     stressLab.refresh();
     renderTopupHoldingOptions();
@@ -851,6 +853,29 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126g';
   mountHoldingImport({
     getHoldings: () => state.holdings,
     getQuotes: () => quoteMap,
+    getTransactions: () => state.transactions.map((row) => ({ ...row, code: stockCode(row.stock) })),
+    today: isoToday,
+    saveTrades: (rows, applyToHoldings) => {
+      if ($('appShell').hidden || (supabaseClient && !cloudReady)) return false;
+      const batch = { holdings: state.holdings.map((item) => ({ ...item })), transactions: [...state.transactions] };
+      for (const { issues, ...trade } of [...rows].sort((a, b) => a.date.localeCompare(b.date))) {
+        if (applyToHoldings) {
+          const error = applyTransaction(batch, trade);
+          if (error) {
+            showToast(`${trade.date} ${trade.stock}：${error}`);
+            return false;
+          }
+        } else {
+          batch.transactions.push({ ...trade, id: crypto.randomUUID(), recordOnly: true, realizedPnl: null });
+        }
+      }
+      state.holdings = batch.holdings;
+      state.transactions = batch.transactions;
+      persist();
+      render();
+      showToast(`已匯入 ${rows.length} 筆成交。${applyToHoldings ? '持股已更新。' : ''}`);
+      return true;
+    },
     escape: esc,
     requestCloudScan: async (provider, image, signal) => {
       const { data, error } = await supabaseClient?.auth.getSession() || {};
@@ -1000,34 +1025,45 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126g';
   $('addTransaction').addEventListener('click', () => { $('transactionForm').reset(); $('transactionDate').value = isoToday(); $('transactionType').value = 'buy'; updateTransactionLabel(); $('transactionDialog').showModal(); });
   $('transactionType').addEventListener('change', updateTransactionLabel);
   $('transactionForm').addEventListener('submit', (event) => {
-    event.preventDefault(); const type = $('transactionType').value, stock = $('transactionStock').value.trim(), shares = num($('transactionShares').value), price = num($('transactionPrice').value), fees = num($('transactionFees').value), tax = num($('transactionTax').value);
-    if (!stock || shares <= 0 || price < 0 || fees < 0 || tax < 0) return showToast('請檢查交易資料。');
-    const date = $('transactionDate').value;
-    if (!date || date > isoToday()) return showToast('交易日期不能晚於今天。');
+    event.preventDefault();
+    const type = $('transactionType').value;
+    const transaction = {
+      type, stock: $('transactionStock').value.trim(), date: $('transactionDate').value,
+      shares: num($('transactionShares').value), price: num($('transactionPrice').value),
+      fees: num($('transactionFees').value), tax: num($('transactionTax').value), note: $('transactionNote').value.trim()
+    };
+    const error = applyTransaction(state, transaction);
+    if (error) return showToast(error);
+    persist(); render(); $('transactionDialog').close(); showToast(type === 'buy' ? '買進紀錄已儲存，持股成本已更新。' : type === 'sell' ? '賣出紀錄已儲存。' : '股利紀錄已儲存。');
+  });
+  function applyTransaction(portfolio, transaction) {
+    const { type, stock, date, shares, price, fees, tax } = transaction;
+    if (!stock || shares <= 0 || price < 0 || fees < 0 || tax < 0) return '請檢查交易資料。';
+    if (!date || date > isoToday()) return '交易日期不能晚於今天。';
     const code = stockCode(stock);
-    if (type !== 'dividend' && state.transactions.some((row) => row.type !== 'dividend' && row.date > date
+    if (type !== 'dividend' && portfolio.transactions.some((row) => row.type !== 'dividend' && !row.recordOnly && row.date > date
         && ((code && stockCode(row.stock) === code) || row.stock.toLowerCase() === stock.toLowerCase()))) {
-      return showToast('此股票已有較晚的成交紀錄。請按成交日期順序記錄，避免平均成本與已實現損益錯置。');
+      return '此股票已有較晚的成交紀錄。請按成交日期順序記錄，避免平均成本與已實現損益錯置。';
     }
-    const taiwanHoldings = state.holdings.filter((item) => holdingMarket(item) === 'tw');
-    if (state.holdings.some((item) => holdingMarket(item) !== 'tw' && [item.symbol, item.name].some((name) => name?.toLowerCase() === stock.toLowerCase())) &&
+    const taiwanHoldings = portfolio.holdings.filter((item) => holdingMarket(item) === 'tw');
+    if (portfolio.holdings.some((item) => holdingMarket(item) !== 'tw' && [item.symbol, item.name].some((name) => name?.toLowerCase() === stock.toLowerCase())) &&
         !taiwanHoldings.some((item) => item.name.toLowerCase() === stock.toLowerCase())) {
-      return showToast('交易與股利紀錄適用台股。海外持股可在「我的持股」編輯。');
+      return '交易與股利紀錄適用台股。海外持股可在「我的持股」編輯。';
     }
     let holding = taiwanHoldings.find((item) => code && stockCode(item.name) === code);
     if (!holding) holding = taiwanHoldings.find((item) => item.name.toLowerCase() === stock.toLowerCase());
     let realizedPnl = 0;
     if (type === 'buy') {
-      if (!holding) { holding = { id: crypto.randomUUID(), name: stock, shares: 0, cost: 0, price, targetWeight: 0, updated: isoToday() }; state.holdings.push(holding); }
+      if (!holding) { holding = { id: crypto.randomUUID(), name: stock, shares: 0, cost: 0, price, targetWeight: 0, updated: isoToday() }; portfolio.holdings.push(holding); }
       holding.cost = (num(holding.shares) * num(holding.cost) + shares * price + fees + tax) / (num(holding.shares) + shares); holding.shares = num(holding.shares) + shares; holding.price = price;
     } else if (type === 'sell') {
-      if (!holding || shares > num(holding.shares)) return showToast('賣出股數不能多於目前持有股數。');
+      if (!holding || shares > num(holding.shares)) return '賣出股數不能多於目前持有股數。';
       realizedPnl = shares * (price - num(holding.cost)) - fees - tax; holding.shares = num(holding.shares) - shares; holding.price = price;
-      if (holding.shares <= 0.0000001) state.holdings = state.holdings.filter((item) => item.id !== holding.id);
+      if (holding.shares <= 0.0000001) portfolio.holdings = portfolio.holdings.filter((item) => item.id !== holding.id);
     }
-    state.transactions.push({ id: crypto.randomUUID(), type, date: $('transactionDate').value, stock, shares, price, fees, tax, note: $('transactionNote').value.trim(), realizedPnl });
-    persist(); render(); $('transactionDialog').close(); showToast(type === 'buy' ? '買進紀錄已儲存，持股成本已更新。' : type === 'sell' ? '賣出紀錄已儲存。' : '股利紀錄已儲存。');
-  });
+    portfolio.transactions.push({ ...transaction, id: crypto.randomUUID(), realizedPnl });
+    return '';
+  }
   $('addAlert').addEventListener('click', () => {
     $('alertForm').reset();
     const holdings = state.holdings.filter((item) => holdingMarket(item) === 'tw');
@@ -1880,7 +1916,8 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126g';
       const type = { buy: '買進', sell: '賣出', dividend: '股利' }[row.type] || '其他';
       const fees = num(row.fees) + num(row.tax);
       const amount = row.type === 'dividend' ? netDividend(row) : row.type === 'sell' ? num(row.realizedPnl) : -(num(row.shares) * num(row.price) + fees);
-      return `<tr><td>${esc(row.date)}</td><td>${esc(row.stock)}${row.note ? `<small class="stock-sub">${esc(row.note)}</small>` : ''}</td><td>${type}</td><td>${num(row.shares).toLocaleString('zh-TW')}</td><td>${money(row.price)}</td><td>${money(fees)}</td><td class="${amount < 0 ? 'negative' : 'positive'}">${money(amount)}</td></tr>`;
+      const amountCell = row.type === 'sell' && row.recordOnly ? '<td>待核算</td>' : `<td class="${amount < 0 ? 'negative' : 'positive'}">${money(amount)}</td>`;
+      return `<tr><td>${esc(row.date)}</td><td>${esc(row.stock)}${row.note || row.recordOnly ? `<small class="stock-sub">${esc(row.note || '僅存紀錄')}</small>` : ''}</td><td>${type}</td><td>${num(row.shares).toLocaleString('zh-TW')}</td><td>${money(row.price)}</td><td>${money(fees)}</td>${amountCell}</tr>`;
     }).join('');
     $('emptyTransactions').hidden = rows.length > 0;
     $('emptyTransactions').querySelector('b').textContent = state.transactions.length ? '沒有符合篩選的交易' : '還沒有交易紀錄';
