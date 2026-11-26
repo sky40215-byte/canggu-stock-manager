@@ -1,4 +1,4 @@
-import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from './holding-image-import.js?v=20261126d';
+import { isTaiwanImportCode, matchHoldingNames, maxImageHoldings, readHoldingTable, readPaddleHoldingTable, reviewImageHoldings } from './holding-image-import.js?v=20261126e';
 
 const allowedImages = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const maxFileBytes = 12 * 1024 * 1024;
@@ -74,7 +74,7 @@ async function scanImage(canvas, signal, report) {
   }
 }
 
-async function scanPaddle(canvas, signal, report) {
+async function scanPaddle(canvas, signal, report, getQuotes) {
   const root = new URL('/vendor/ocr/paddle-v1/', location.origin).href;
   let worker, timeout, stop, stopped = false, failed;
   const interruption = new Promise((_, reject) => {
@@ -103,12 +103,12 @@ async function scanPaddle(canvas, signal, report) {
         ortOptions: { backend: 'wasm', numThreads: 1, wasmPaths: root }
       });
       if (stopped || signal.aborted) return [];
-      report('PaddleOCR 正在辨識表格文字…');
+      report('PaddleOCR 正在辨識持股文字…');
       [result] = await ocr.predict(canvas);
     } catch {
       throw new Error('PaddleOCR 無法完成辨識。請重試或使用目前的裝置辨識預覽。');
     }
-    return readPaddleHoldingTable(result?.items ?? []);
+    return readPaddleHoldingTable(result?.items ?? [], getQuotes());
   };
   try {
     return await Promise.race([run(), interruption]);
@@ -301,7 +301,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
         setStatus(`正在辨識持股欄位… ${Math.round(progress * 100)}%`);
       });
       if (controller.signal.aborted) return;
-      const found = readHoldingTable(tsv);
+      const found = readHoldingTable(tsv, getQuotes());
       showCandidates(found);
       setStatus(found.length
         ? `裝置辨識找到 ${found.length} 筆候選持股。請對照原圖核對代號、股數與均價。${found.length === maxImageHoldings ? ' 單張截圖最多處理 50 筆。' : ''}`
@@ -340,7 +340,7 @@ export function mountHoldingImport({ getHoldings, getQuotes, saveHoldings, reque
     try {
       const rows = cloudScan
         ? await requestCloudScan(service, cloudJpeg(image), controller.signal)
-        : await scanPaddle(normalizedImage(image), controller.signal, setStatus);
+        : await scanPaddle(normalizedImage(image), controller.signal, setStatus, getQuotes);
       if (!dialog.open || controller.signal.aborted) return;
       if (rows.length) {
         showCandidates(rows);

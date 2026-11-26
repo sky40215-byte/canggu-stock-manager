@@ -36,6 +36,43 @@ test('reads a per-share cost and converts lots without taking values from adjace
   ]);
 });
 
+test('reads inventory cards by their labels and skips watchlist rows', () => {
+  const result = readHoldingTable(makeTsv([
+    ['庫存明細'],
+    ['台積電（2330）'],
+    ['現價 NT$ 720', '持有 67 股', '均價 NT$ 642.50'],
+    ['元大台灣50', '0050'],
+    ['庫存 2.5 張', '可賣股數 2,000', '總成本 393,250'],
+    ['自選股'],
+    ['2303 聯電'],
+    ['持有 40 股', '現價 50']
+  ]));
+  assert.deepEqual(result, [
+    { code: '2330', name: '台積電', shares: '67', cost: '642.5', price: '720' },
+    { code: '0050', name: '元大台灣50', shares: '2500', cost: '', price: '' }
+  ]);
+});
+
+test('pairs stacked labels by column and leaves ambiguous units and conflicting quantities for review', () => {
+  const result = readHoldingTable(makeTsv([
+    ['我的持股'],
+    ['台積電'],
+    ['每股均價', '持有股數'],
+    ['642.50', '67'],
+    ['持有 100 股'],
+    ['0050 元大台灣50'],
+    ['持股 2', '均價 157.30'],
+    ['成本價'],
+    ['2330'],
+    ['持倉股數 8', '可賣股數 6']
+  ]), new Map([['2330', { name: '台積電' }]]));
+  assert.deepEqual(result, [
+    { code: '2330', name: '台積電', shares: '', cost: '642.5', price: '' },
+    { code: '0050', name: '元大台灣50', shares: '', cost: '157.3', price: '' },
+    { code: '2330', name: '台積電', shares: '8', cost: '', price: '' }
+  ]);
+});
+
 test('total cost and available quantity cannot substitute for missing fields', () => {
   const tsv = makeTsv([
     ['股票名稱', '持有股數', '可賣股數', '總成本', '最新價'],
