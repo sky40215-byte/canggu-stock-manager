@@ -303,3 +303,21 @@ body[data-eye-comfort="true"] .app-shell {
 @media (max-height: 460px) and (orientation: landscape) {
   .app-shell .topbar { position: static; }
 }
+
+.method-note { margin-top: 10px; padding: 10px 0; border-top: 1px solid var(--line); color: #405663; font-size: 13px; line-height: 1.6; }
+.method-note > summary { width: fit-content; color: #235c61; font-weight: 650; cursor: pointer; }
+.method-note p { margin: 6px 0 0; }
+.assistant-disclosure { display: grid; gap: 6px; padding: 10px 0; border-block: 1px solid var(--line); color: var(--desk-muted); font-size: 13px; }
+.assistant-disclosure p { margin: 0; }
+.assistant-disclosure .assistant-consent { margin: 0; }
+.assistant-card #assistantStatus:empty, .assistant-card #assistantMessages:empty { display: none; }
+.assistant-card .assistant-message { border-radius: 6px; }
+.demo-page { background: #f3f6f8; color: #1b2d3b; }
+.demo-page .demo-shell { max-width: 990px; padding-top: 22px; }
+.demo-header-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.demo-page .demo-notice { background: #e7f1ef; color: #264c4c; padding: 10px 12px; }
+.demo-page .demo-panel { border-radius: 7px; border-color: #d8e1e6; }
+.demo-page .demo-section-top p, .demo-method-caption { font-size: 13px; color: #405663; }
+.demo-page .demo-holdings small { color: #405663; }
+.demo-page .scenario-comparison { padding: 10px; border-radius: 6px; }
+.demo-page .demo-panel > summary { cursor: pointer; }

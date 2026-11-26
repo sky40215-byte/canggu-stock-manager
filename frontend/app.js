@@ -1,7 +1,7 @@
 import { calculateTopup, marketTotals, topupApiResult } from './portfolio-math.js?v=20261125d';
-import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
+import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261126k';
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
-import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
+import { mountPortfolioStress } from './portfolio-stress.js?v=20261126k';
 import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
 
 (() => {
@@ -661,7 +661,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       if (data.warnings?.length) $('quoteStatus').textContent += ` · ${data.warnings.join('、')}`;
       if (taiwanHoldings.length && !matched) showToast('行情已連線，但台股持股名稱中需要有 4–6 碼股票代號才能配對。');
     } catch (error) { const detail = error.message.includes('Failed to fetch') ? '無法連到資料服務，請確認服務已啟動。' : error.message; const previousDate = [...quoteMap.values()].map((row) => row.date).filter(Boolean).sort().at(-1); $('quoteStatus').textContent = previousDate ? `更新失敗，暫沿用 ${previousDate} 的舊資料 · ${detail}` : `行情更新失敗 · ${detail}`; setQuoteFreshness('error', previousDate ? `更新失敗 · 沿用 ${previousDate}` : '行情更新失敗', detail); $('candidateContent').innerHTML = `<div class="news-empty">公開行情暫時無法取得：${esc(error.message)}</div>`; showToast('行情更新失敗；總覽已標出目前資料日期。'); }
-    finally { button.disabled = false; candidateButton.disabled = false; button.textContent = '↻ 更新行情'; candidateButton.textContent = '↻ 更新候選股號'; }
+    finally { button.disabled = false; candidateButton.disabled = false; button.textContent = '↻ 更新行情'; candidateButton.textContent = '更新市場行情'; }
   }
   function renderCandidates(quotes = [...quoteMap.values()], updatedAt = '') {
     const candidates = quotes.map((row) => {
@@ -1242,11 +1242,13 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
         : '網站管理者尚未在伺服器設定 Fugle API 金鑰。金鑰僅應存放在伺服器環境變數，請勿輸入網頁或貼到聊天。';
     }
   }
-  const assistantHistory = [];
+  const assistantHistory = { fugle: [], ollama: [], gemini: [] };
+  const assistantLabels = { fugle: 'Fugle 摘要', ollama: 'Ollama', gemini: 'Gemini' };
   function renderAssistantMetrics(data) {
     let node = $('assistantMetrics');
-    if (!node) { node = document.createElement('div'); node.id = 'assistantMetrics'; node.className = 'assistant-status'; $('assistantStatus').after(node); }
+    if (!node) { node = document.createElement('p'); node.id = 'assistantMetrics'; $('assistantMetricsInfo').append(node); }
     const provider = $('assistantProvider').value;
+    $('assistantMetricsInfo').hidden = !['ollama', 'gemini'].includes(provider);
     const metric = data?.aiMetrics?.[provider];
     if (!metric?.total) { node.textContent = 'AI 服務統計：目前尚無本次啟動期間的模型請求紀錄。'; return; }
     node.textContent = `${provider === 'ollama' ? 'Ollama' : 'Gemini'} 服務統計（伺服器本次啟動）：${metric.total} 次，成功 ${metric.successRatePercent}%，平均 ${metric.averageDurationMs.toLocaleString('zh-TW')} 毫秒${metric.lastErrorCode ? `；最近錯誤代碼 ${metric.lastErrorCode}` : ''}。重啟伺服器後歸零。`;
@@ -1282,12 +1284,13 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
-  function addAssistantMessage(role, content) {
+  function addAssistantMessage(role, content, provider) {
     const list = $('assistantMessages');
     list.querySelector('.assistant-empty')?.remove();
     const bubble = document.createElement('div');
     bubble.className = `assistant-message assistant-message-${role}`;
-    const label = document.createElement('b'); label.textContent = role === 'user' ? '你' : '助理';
+    const label = document.createElement('b');
+    label.textContent = role === 'user' ? (provider === 'fugle' ? '查詢' : '你') : assistantLabels[provider];
     const text = document.createElement('p'); text.textContent = formatAssistantText(content);
     bubble.append(label, text); list.append(bubble); list.scrollTop = list.scrollHeight;
     return bubble;
@@ -1296,25 +1299,40 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   function updateAssistantProviderCopy() {
     const provider = $('assistantProvider').value, useOllama = provider === 'ollama', useFugle = provider === 'fugle';
     const name = useFugle ? 'Fugle 行情服務' : useOllama ? 'Ollama' : 'Gemini';
-    const privacy = document.querySelector('.assistant-privacy p'), consent = document.querySelector('.assistant-card .assistant-consent');
-    if (privacy) privacy.textContent = useFugle
-      ? '勾選同意並送出後，系統只會把股票代號傳給 Fugle 查詢報價與歷史日 K，再由程式產生固定技術摘要。你的問題文字、近期對話、持倉、成本和損益都不會傳給 Fugle 或 AI。此模式不能回答一般聊天問題。'
-      : `勾選同意並送出後，主題、問題與最近 10 則對話會交給 ${name}。填股票代號時，Fugle 報價和歷史日 K 指標也會交給 ${name}。持倉、成本、損益不會自動讀取；對話不會保存在帳號或瀏覽器。${useOllama ? '資料會送至目前設定的 Ollama 服務。' : 'Gemini 是 Google 雲端服務，請勿輸入不願交給 Google 的資料。'}`;
-    if (consent) consent.lastChild.textContent = useFugle
-      ? '我已閱讀，並同意只將股票代號送給 Fugle 查詢行情；不傳送問題文字或對話'
-      : `我已閱讀，並同意將本次主題、問題、近期對話及填入代號查到的行情資料（可能包含交易所最近收盤資料）傳給 ${name}`;
+    $('assistantDisclosure').textContent = useFugle
+      ? '摘要由程式根據行情和歷史日 K 計算。查詢會將股票代號送到行情服務。'
+      : `送出後，${name} 會收到主題、本次問題和此模型最近 4 組問答。填入代號時，也會附上行情與技術指標。程式不會自動附上持倉資料。對話留在目前頁面。`;
+    $('assistantConsentLabel').textContent = useFugle
+      ? '同意以此代號查詢行情'
+      : `同意把上述資料送給 ${name}`;
+    $('assistantConsent').checked = false;
     const assistantInput = $('assistantInput');
     assistantInput.disabled = useFugle;
     assistantInput.required = !useFugle;
-    assistantInput.placeholder = useFugle ? 'Fugle 摘要模式不使用問題文字；填入股票代號後即可查詢。' : '輸入你的問題（最多 2,000 字）';
+    $('assistantQuestionField').hidden = useFugle;
+    $('assistantTopicRow').hidden = useFugle;
+    $('assistantSymbol').required = useFugle;
+    $('assistantSymbolLabel').textContent = useFugle ? '股票代號' : '股票代號（選填）';
     $('assistantSend').textContent = useFugle ? '查詢行情摘要' : '送出問題';
-    $('assistantBadge').textContent = assistantProviderAvailability[provider] ? `${name}${useOllama ? ` · ${$('assistantBadge').dataset.ollamaModel || '本機模型'}` : ''} 已設定` : `${name} 尚未設定`;
+    $('assistantBadge').textContent = assistantProviderAvailability[provider] ? `${name}已設定` : `${name}尚未設定`;
     $('assistantBadge').classList.toggle('source-warning', !assistantProviderAvailability[provider]);
+    $('assistantSend').disabled = !assistantProviderAvailability[provider];
+    $('assistantMetricsInfo').hidden = useFugle;
+    $('assistantStatus').textContent = assistantProviderAvailability[provider] ? '' : '目前沒有設定這項服務。';
+    const log = $('assistantMessages');
+    log.replaceChildren();
+    const history = assistantHistory[provider] || [];
+    if (history.length) history.forEach(({ role, content }) => addAssistantMessage(role, content, provider));
+    else {
+      const hint = document.createElement('p');
+      hint.className = 'assistant-empty';
+      hint.textContent = useFugle ? '輸入股票代號查看行情與技術摘要。' : '輸入問題後，回答會顯示在這裡。';
+      log.append(hint);
+    }
   }
   async function checkAssistantStatus() {
     try {
       const response = await fetch('/api/assistant/status', { cache: 'no-store' }), data = await response.json();
-      renderAssistantMetrics(data);
       assistantProviderAvailability = data.providers || { fugle: false, ollama: data.provider === 'ollama' && data.configured, gemini: data.provider === 'gemini' && data.configured };
       $('assistantBadge').dataset.ollamaModel = data.ollamaModel || (data.provider === 'ollama' ? data.model : '') || '本機模型';
       const select = $('assistantProvider');
@@ -1329,38 +1347,49 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       if (!assistantProviderAvailability.ollama) ollamaTopupOption.textContent = 'Ollama 分析（尚未設定）';
       if (ollamaTopupOption.disabled && $('topupMode').value === 'ollama') { $('topupMode').value = 'fugle'; updateTopupMode(); }
       if (!assistantProviderAvailability[select.value]) select.value = assistantProviderAvailability[data.provider] ? data.provider : assistantProviderAvailability.ollama ? 'ollama' : assistantProviderAvailability.gemini ? 'gemini' : 'fugle';
-      select.addEventListener('change', () => { updateAssistantProviderCopy(); void refreshAssistantMetrics(); });
+      select.addEventListener('change', () => {
+        updateAssistantProviderCopy();
+        $('assistantMetrics')?.replaceChildren();
+        void refreshAssistantMetrics();
+      });
       updateAssistantProviderCopy();
+      renderAssistantMetrics(data);
       if (!assistantProviderAvailability.ollama && !assistantProviderAvailability.gemini && !assistantProviderAvailability.fugle) $('assistantStatus').textContent = '尚未設定 Fugle 或可用的助理服務。';
-    } catch { $('assistantBadge').textContent = '助理設定無法讀取'; $('assistantStatus').textContent = '目前無法連線到助理設定，請重新整理後再試。'; }
+    } catch { $('assistantBadge').textContent = '助理設定無法讀取'; $('assistantSend').disabled = true; $('assistantStatus').textContent = '目前無法讀取助理設定，請重新整理後再試。'; }
   }
   $('assistantForm').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const provider = $('assistantProvider').value;
+    const selector = $('assistantProvider'), provider = selector.value, button = $('assistantSend');
+    if (button.disabled || !assistantProviderAvailability[provider]) return;
     const symbol = $('assistantSymbol').value.trim();
     const question = provider === 'fugle' ? `查詢 ${symbol} 行情與技術摘要` : $('assistantInput').value.trim();
     if (!question) return;
     if (provider === 'fugle' && !/^\d{4,6}$/.test(symbol)) { $('assistantStatus').textContent = 'Fugle 摘要需要 4–6 位數股票代號，例如 2330。'; $('assistantSymbol').focus(); return; }
     if (!$('assistantConsent').checked) { $('assistantStatus').textContent = '請先閱讀並勾選資料傳送同意，再送出問題。'; $('assistantConsent').focus(); return; }
     $('assistantConsent').checked = false;
-    const button = $('assistantSend'); button.disabled = true; $('assistantStatus').textContent = '助理正在整理回答…';
-    addAssistantMessage('user', question); $('assistantInput').value = '';
-    assistantHistory.push({ role: 'user', content: question });
-    const pending = addAssistantMessage('assistant', '正在思考…');
+    button.disabled = true; selector.disabled = true;
+    $('assistantStatus').textContent = provider === 'fugle' ? '正在查詢行情…' : `等待 ${assistantLabels[provider]} 回覆…`;
+    const history = assistantHistory[provider];
+    const userMessage = { role: 'user', content: question };
+    const earlier = history.slice(-8).map(({ role, content }) => ({ role, content: content.trim().slice(0, 2000) }));
+    const topic = $('assistantTopic').value;
     try {
       const { data } = await supabaseClient?.auth.getSession() || {};
       const headers = { 'Content-Type': 'application/json' };
       if (data?.session?.access_token) headers.Authorization = `Bearer ${data.session.access_token}`;
-      const response = await fetch('/api/assistant', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ topic: $('assistantTopic').value, provider, symbol, messages: provider === 'fugle' ? [] : assistantHistory.slice(-10) }) });
+      const response = await fetch('/api/assistant', { method: 'POST', headers, cache: 'no-store', body: JSON.stringify({ topic, provider, symbol, aiConsent: true, messages: provider === 'fugle' ? [] : [...earlier, userMessage] }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '助理暫時無法回答，請稍後再試。');
-      pending.querySelector('p').textContent = formatAssistantText(result.answer);
-      assistantHistory.push({ role: 'assistant', content: result.answer });
+      if (typeof result.answer !== 'string' || !result.answer.trim()) throw new Error('服務沒有回傳可顯示的結果。');
+      history.push(userMessage, { role: 'assistant', content: result.answer });
+      history.splice(0, Math.max(0, history.length - 10));
+      if (provider !== 'fugle' && $('assistantInput').value.trim() === question) $('assistantInput').value = '';
+      updateAssistantProviderCopy();
       $('assistantStatus').textContent = '';
       void refreshAssistantMetrics();
     } catch (error) {
-      pending.remove(); assistantHistory.pop(); addAssistantMessage('assistant', error.message || '連線失敗，請稍後再試。'); $('assistantStatus').textContent = '這次沒有取得回答；你可以稍後重新送出。'; void refreshAssistantMetrics();
-    } finally { button.disabled = false; $('assistantInput').focus(); }
+      $('assistantStatus').textContent = error.message || '連線失敗，請稍後再試。'; void refreshAssistantMetrics();
+    } finally { button.disabled = false; selector.disabled = false; }
   });
   checkAssistantStatus();
   let topupRequest = 0;
@@ -1586,7 +1615,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
         const price = livePrice(holding), quote = holdingQuote(holding);
         if (!(price >= 0.0001)) throw new Error('請先在「我的持股」填寫有效的備用價格，或更新行情。');
         dataResult = { mode, result: topupApiResult({
-          ...input, symbol: input.symbolOrName, name: holding.name, price, currency: holdingCurrency(holding),
+          ...input, symbol: input.symbolOrName, name: overviewPosition(holding).name, price, currency: holdingCurrency(holding),
           market: holdingMarket(holding), quoteSource: quote ? quote.source || 'TWSE／TPEx' : '持倉備用價格',
           quoteDate: quote?.date || quote?.datetime, priceType: quote ? '最近取得的持股行情' : '手動輸入的參考價格'
         }) };
@@ -1602,10 +1631,11 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       const item = { currency: 'TWD', market: 'tw', ...dataResult.result };
       const money = (value) => formatScenarioMoney(value, item.currency);
       $('addTopupPriceAlert').disabled = item.market !== 'tw';
-      $('topupResult').innerHTML = `<div class="topup-result-heading"><div><b>${esc(item.symbol)} ${esc(item.name || '')}</b><small>${esc(item.quoteDate || '行情日期未提供')} · ${esc(item.quoteUpdatedAt || '')} · ${esc(item.priceType)}</small></div><strong>${money(item.price)}<small>${esc(item.quoteSource || 'Fugle')} 價格參考</small></strong></div><div class="topup-result-grid"><article><small>預算可買股數</small><b>${Number(item.sharesToBuy).toLocaleString('zh-TW')} 股</b></article><article><small>加碼支出（含買入手續費）</small><b>${money(item.purchaseTotal)}</b></article><article><small>加碼後總股數</small><b>${Number(item.totalShares).toLocaleString('zh-TW')} 股</b></article><article><small>加碼後均價（未含交易費）</small><b>${money(item.newAverageCost)}／股</b></article><article><small>剩餘預算</small><b>${money(item.remainingBudget)}</b></article><article><small>目前市值估算淨損益</small><b class="${item.projectedUnrealizedPnl < 0 ? 'negative' : 'positive'}">${money(item.projectedUnrealizedPnl)}</b></article><article><small>估算損益兩平價</small><b>${money(item.estimatedBreakEvenPrice)}／股</b></article><article><small>買入手續費</small><b>${money(item.buyCommission)}</b></article></div><section id="topupComparison" class="scenario-comparison" aria-label="加碼方案比較"></section>${topupScenarioMarkup(item)}<small class="topup-calculation-note">股數依 ${item.shareUnit === 1000 ? '整張（1,000 股）' : '零股（1 股）'}計算；已依你設定的費率估算交易成本，不含券商最低手續費與滑價。</small>${dataResult.analysis ? `<section class="topup-analysis"><b>Ollama 趨勢觀察</b><p>${esc(formatAssistantText(dataResult.analysis))}</p></section>` : ''}`;
+      $('topupResult').innerHTML = `<div class="topup-result-heading"><div><b>${esc(item.symbol)} ${esc(item.name || '')}</b><small>${esc([item.quoteDate || item.quoteUpdatedAt || '行情時間未提供', item.quoteDate && item.quoteUpdatedAt !== item.quoteDate ? item.quoteUpdatedAt : '', item.priceType].filter(Boolean).join(' · '))}</small></div><strong>${money(item.price)}<small>${esc(item.quoteSource || 'Fugle')} 價格參考</small></strong></div><div class="topup-result-grid"><article><small>預算可買股數</small><b>${Number(item.sharesToBuy).toLocaleString('zh-TW')} 股</b></article><article><small>加碼支出（含買入手續費）</small><b>${money(item.purchaseTotal)}</b></article><article><small>加碼後總股數</small><b>${Number(item.totalShares).toLocaleString('zh-TW')} 股</b></article><article><small>加碼後均價（未含交易費）</small><b>${money(item.newAverageCost)}／股</b></article><article><small>剩餘預算</small><b>${money(item.remainingBudget)}</b></article><article><small>目前市值估算淨損益</small><b class="${item.projectedUnrealizedPnl < 0 ? 'negative' : 'positive'}">${money(item.projectedUnrealizedPnl)}</b></article><article><small>估算損益兩平價</small><b>${money(item.estimatedBreakEvenPrice)}／股</b></article><article><small>買入手續費</small><b>${money(item.buyCommission)}</b></article></div><section id="topupComparison" class="scenario-comparison" aria-label="加碼方案比較"></section>${topupScenarioMarkup(item)}<small class="topup-calculation-note">股數依 ${item.shareUnit === 1000 ? '整張（1,000 股）' : '零股（1 股）'}計算；已依你設定的費率估算交易成本，不含券商最低手續費與滑價。</small>${dataResult.analysis ? `<section class="topup-analysis"><b>Ollama 趨勢觀察</b><p>${esc(formatAssistantText(dataResult.analysis))}</p></section>` : ''}`;
       bindTopupScenario(item, holding);
       $('topupResult').hidden = false;
-      $('topupStatus').textContent = dataResult.mode === 'ollama' ? `計算完成；以下另附 Ollama 行情觀察。價格來源：${item.quoteSource || 'Fugle'}。` : `試算完成。價格來源：${item.quoteSource || 'Fugle'}。`;
+      $('topupStatus').textContent = dataResult.analysisWarning
+        || (dataResult.analysis ? '試算完成。Ollama 的整理附在試算結果下方。' : '試算完成。');
     } catch (error) { if (request === topupRequest) $('topupStatus').textContent = error.message || '連線失敗，請稍後重試。'; }
     finally { if (request === topupRequest) { button.disabled = false; updateTopupMode(); } }
   });

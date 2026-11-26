@@ -1,6 +1,6 @@
 import { marketTotals } from './portfolio-math.js?v=20261125d';
-import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261125d';
-import { mountPortfolioStress } from './portfolio-stress.js?v=20261125d';
+import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare.js?v=20261126k';
+import { mountPortfolioStress } from './portfolio-stress.js?v=20261126k';
 
 const markets = {
   tw: { currency: 'TWD', budget: 20000, items: [
@@ -12,7 +12,6 @@ const markets = {
     { id: 'us2', name: 'Demo Utilities', shares: 10, cost: 48, price: 50 }
   ] }
 };
-const date = '2026-11-24';
 const $ = (id) => document.getElementById(id);
 const activeMarket = () => markets[$('demoMarket').value];
 let comparison;
@@ -49,7 +48,7 @@ function saveDemoEntry(title, text) {
 }
 function saveDemoScenario(item, scenario) {
   const money = (number) => formatScenarioMoney(number, item.currency);
-  saveDemoEntry(item.name + ' · 持倉情境', `示範資料 ${date}。假設於 ${money(scenario.buyPrice)} 買入、未來股價 ${money(scenario.futurePrice)}。不加碼損益 ${money(scenario.baseline.pnl)}，加碼損益 ${money(scenario.added.pnl)}。`);
+  saveDemoEntry(item.name + ' · 持倉情境', `假設以 ${money(scenario.buyPrice)} 買入 ${scenario.added.shares} 股，未來股價 ${money(scenario.futurePrice)}。不加碼損益 ${money(scenario.baseline.pnl)}，加碼損益 ${money(scenario.added.pnl)}。`);
   $('demoSaveStatus').textContent = '已存入這次的示範日誌。';
 }
 
@@ -83,7 +82,7 @@ function openDemoScenario(holding) {
   $('demoBudget').focus({ preventScroll: true });
 }
 
-$('demoNotice').prepend(`固定資料日期 ${date}。`);
+$('resetDemo').addEventListener('click', () => location.reload());
 $('demoMarket').addEventListener('change', renderDemoMarket);
 $('demoHoldings').addEventListener('click', (event) => {
   const button = event.target.closest('[data-demo-holding]');
@@ -93,7 +92,7 @@ $('demoHoldings').addEventListener('click', (event) => {
 });
 const demoStress = mountPortfolioStress($('demoStress'), {
   getPositions: () => Object.entries(markets).flatMap(([market, group]) => group.items.map((item) => ({
-    ...item, currency: group.currency, market, marketName: market === 'tw' ? '台灣' : '美國', source: '固定示範 · ' + date
+    ...item, currency: group.currency, market, marketName: market === 'tw' ? '台灣' : '美國', source: '固定示範價'
   }))),
   onSave: ({ group, change, difference }) => {
     saveDemoEntry(group.label + ' · 持倉壓力測試', '基準情境 ' + change + '%，估算市值變動 ' + formatScenarioMoney(difference, group.currency) + '。');
@@ -102,6 +101,7 @@ const demoStress = mountPortfolioStress($('demoStress'), {
 });
 renderDemoMarket();
 $('demoMarket').disabled = false;
+$('resetDemo').disabled = false;
 $('demoStress').hidden = false;
 $('demoLoading').hidden = true;
 

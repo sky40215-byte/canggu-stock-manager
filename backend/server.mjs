@@ -908,15 +908,16 @@ const server = http.createServer(async (req, res) => {
         user = await requireAuthenticatedUser(req, res);
         if (!user) return;
       }
-      const rateKey = user?.id || req.socket.remoteAddress || 'local';
-      if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時最多詢問 20 次，請稍後再試。' });
       const body = await readJsonBody(req);
       const provider = body.provider === undefined ? AI_PROVIDER : body.provider;
       if (!['fugle', 'ollama', 'gemini'].includes(provider)) return send(res, 400, { error: '請選擇可用的助理服務。' });
+      if (provider !== 'fugle' && body.aiConsent !== true) return send(res, 400, { error: '請先確認同意將本次資料送給所選模型。' });
       if (!aiProviderConfigured(provider)) return send(res, 503, { error: provider === 'fugle' ? 'Fugle 尚未設定 API 金鑰。' : provider === 'gemini' ? 'Gemini 尚未設定 API 金鑰，請選擇已設定的服務。' : 'Ollama 尚未設定服務網址，請選擇已設定的服務。' });
       const topic = assistantTopics[body.topic] || '一般問題';
       const symbol = String(body.symbol || '').trim();
       if (symbol && !/^\d{4,6}$/.test(symbol)) return send(res, 400, { error: '股票代號請輸入 4–6 位數字。' });
+      const rateKey = user?.id || req.socket.remoteAddress || 'local';
+      if (!checkAssistantRateLimit(rateKey)) return send(res, 429, { error: '每小時最多詢問 20 次，請稍後再試。' });
       if (provider === 'fugle') {
         if (!symbol) return send(res, 400, { error: '使用 Fugle 行情摘要時，請先填入股票代號。' });
         const quote = await quoteWithFallback(symbol);
@@ -999,8 +1000,9 @@ const server = http.createServer(async (req, res) => {
       const marketSummary = JSON.parse(assistantMarketSummary(symbol, quote, trend));
       const context = JSON.stringify({ market: marketSummary, userEnteredCalculation: result });
       const analysis = await askAssistant([
-        { role: 'user', content: '請用一般讀者看得懂的繁體中文，解釋以下加碼試算和技術趨勢，列出 Fugle 試算價格、若有資料則列出近 20 個交易日的歷史價格區間，並提供偏多、中性或偏弱的研究觀察、需要確認的條件與主要風險。歷史價格區間不可描述成建議進場價。不要把它寫成個人化下單指令。' }
-      ], '加碼試算', context, 'ollama');
+        { role: 'user', content: '請用繁體中文解釋以下試算。沿用資料中的價格、來源及時間。若使用交易所備援收盤價，明確標示為收盤資料。只有日 K 足夠時才列出近 20 個交易日價格區間與技術觀察，並交代需要確認的條件和風險。請勿補造數字或提供下單指令。' }
+      ], '加碼試算', context, 'ollama').catch(() => '');
+      if (!analysis) return send(res, 200, { mode, result, analysisWarning: '試算已完成。這次未取得 Ollama 分析，可稍後再試。' });
       return send(res, 200, { mode, result, analysis });
     }
     if (url.pathname === '/api/fugle/status') {

@@ -1,4 +1,4 @@
-import { formatScenarioMoney } from './scenario-compare.js?v=20261125d';
+import { formatScenarioMoney } from './scenario-compare.js?v=20261126k';
 
 function safeShock(value) {
   const change = Number(value);

@@ -6,19 +6,20 @@
   <meta name="theme-color" content="#14394e">
   <title>端股｜競賽示範</title>
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
-  <link rel="stylesheet" href="/styles.css?v=20261125d">
+  <link rel="stylesheet" href="/styles.css?v=20261126h">
+  <link rel="stylesheet" href="/workbench.css?v=20261126k">
 </head>
 <body class="demo-page">
   <main class="demo-shell">
     <header class="demo-header">
-      <div><p>端股 ／ 競賽示範</p><h1>多投入一筆，風險會變多少？</h1></div>
-      <a class="secondary-button" href="/">返回端股</a>
+      <h1>端股競賽示範</h1>
+      <div class="demo-header-actions"><button id="resetDemo" class="secondary-button" type="button" disabled>重設示範</button><a class="secondary-button" href="/">返回端股</a></div>
     </header>
-    <p class="demo-notice" id="demoNotice">使用虛構持股與固定示範價格。筆記只保留在此示範頁，重新整理會清除。</p>
+    <p class="demo-notice"><strong>固定案例</strong>　持股、價格與費率皆為示範資料。試算在瀏覽器執行，免登入。日誌在重設或離開頁面後清除。</p>
     <p id="demoLoading" role="status">正在載入示範資料…</p>
     <section class="demo-panel" aria-labelledby="demoHoldingsTitle">
       <div class="demo-section-top">
-        <div><h2 id="demoHoldingsTitle">投資總覽</h2><p>切換市場後，摘要與持倉會一同更新。</p></div>
+        <div><h2 id="demoHoldingsTitle">示範投資組合</h2><p>選一筆持倉，比較加碼前後的損益與集中度。</p></div>
         <label class="demo-market-picker">市場<select id="demoMarket" disabled><option value="tw">台灣</option><option value="us">美國</option></select></label>
       </div>
       <div class="demo-metrics" id="demoMetrics"></div>
@@ -37,7 +38,7 @@
       <h2 id="demoJournalTitle">示範日誌</h2><div id="demoJournalEntries"></div>
     </section>
     <details class="demo-panel" id="demoStress" hidden>
-      <summary><strong>進一步體驗整組持倉壓力測試</strong></summary>
+      <summary><strong>持倉壓力測試</strong></summary>
       <div class="risk-parameters" data-stress-parameters>
         <label>市場與幣別<select data-stress-scope></select></label>
         <label>全組價格變動（%）<input type="number" min="-100" max="100" step="0.1" value="-10" data-stress-shock></label>
@@ -45,9 +46,10 @@
       </div>
       <p class="risk-status" data-stress-status role="status"></p><div class="risk-metrics" data-stress-metrics></div>
       <div class="risk-table-wrap"><table><caption class="sr-only">模擬持倉個別影響</caption><thead><tr><th scope="col">持股</th><th scope="col">參考市值</th><th scope="col">個股漲跌（%）</th><th scope="col">情境市值</th><th scope="col">影響金額</th></tr></thead><tbody data-stress-rows></tbody></table></div>
+      <p class="demo-method-caption">市值變動＝每筆參考市值 × 假設漲跌幅後加總。股數固定，未計匯率、交易成本及股利。</p>
       <button type="button" class="secondary-button" data-stress-save disabled>存入示範日誌</button>
     </details>
   </main>
-  <script type="module" src="/demo.js?v=20261125e"></script>
+  <script type="module" src="/demo.js?v=20261126k"></script>
 </body>
 </html>

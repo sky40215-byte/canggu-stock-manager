@@ -27,6 +27,14 @@ export function mountScenarioComparison(container, { item, buyPrice, portfolio =
       <table><thead><tr><th scope="col">比較項目</th><th scope="col">不加碼</th><th scope="col">加碼</th></tr></thead><tbody data-scenario-rows></tbody></table>
     </div>
     <p class="scenario-difference" data-scenario-difference></p>
+    <details class="method-note">
+      <summary>計算明細</summary>
+      <div class="scenario-comparison-table"><table>
+        <thead><tr><th scope="col">金額項目</th><th scope="col">不加碼</th><th scope="col">加碼</th></tr></thead>
+        <tbody data-scenario-amounts></tbody>
+      </table></div>
+      <p>估算淨損益＝情境市值 − 帳面成本 − 買入手續費 − 預估賣出手續費 − 預估賣出稅。</p>
+    </details>
     ${portfolio ? '<small>持倉比重按同市場、同幣別的股票市值估算。其餘股票價格固定，加碼資金另投入。</small>' : ''}
     ${onSave ? `<div class="scenario-quick-actions"><button type="button" class="secondary-button" data-save-scenario>${saveLabel}</button></div>` : ''}`;
 
@@ -51,6 +59,12 @@ export function mountScenarioComparison(container, { item, buyPrice, portfolio =
     ];
     if (portfolio) rows.splice(3, 0, ['持倉比重', weight(baselineWeight), weight(addedWeight)]);
     container.querySelector('[data-scenario-rows]').innerHTML = rows.map(([label, before, after]) => `<tr><th scope="row">${label}</th><td>${before}</td><td>${after}</td></tr>`).join('');
+    const amounts = [
+      ['情境市值', 'marketValue'], ['帳面成本', 'totalCost'], ['新增買入手續費', 'buyCommission'],
+      ['預估賣出手續費', 'saleCommission'], ['預估賣出稅', 'saleTax']
+    ];
+    container.querySelector('[data-scenario-amounts]').innerHTML = amounts.map(([label, key]) =>
+      `<tr><th scope="row">${label}</th><td>${money(baseline[key])}</td><td>${money(added[key])}</td></tr>`).join('');
     const summary = container.querySelector('[data-scenario-difference]');
     summary.textContent = pnlDifference === 0 ? '在這個情境下，兩方案的估算淨損益相同。'
       : `相較於不加碼，加碼的估算淨損益${pnlDifference > 0 ? '高' : '低'} ${money(Math.abs(pnlDifference))}。`;
