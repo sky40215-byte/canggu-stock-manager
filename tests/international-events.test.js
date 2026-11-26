@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { companyProfiles, eventCandidates, findCompanyMentions } from '../backend/international-events.mjs';
+import { companyProfiles, eventCandidates, findCompanyMentions, researchModelContext } from '../backend/international-events.mjs';
 
 const market = companyProfiles([
   { 公司代號: '2330', 公司簡稱: '臺積電', 英文簡稱: 'TSMC' },
@@ -58,4 +58,24 @@ test('filters unknown codes and unsupported stock claims and distinguishes model
   assert.deepEqual(stock.map(({ code, connection, evidence }) => [code, connection, evidence]), [
     ['2330', 'mention', ['N1']], ['2317', 'inference', ['N1']]
   ]);
+});
+
+test('bounds the UTF-8 model request and caps citations to the news actually sent to Ollama', () => {
+  const sources = Array.from({ length: 18 }, (_, index) => ({
+    id: `N${index + 1}`, type: 'news', title: '測試標題'.repeat(100), summary: '測試內文'.repeat(180), date: '測試'.repeat(200)
+  }));
+  const rows = Array.from({ length: 250 }, (_, index) => ({ code: String(1000 + index), name: '測試公司'.repeat(60) }));
+  const allIds = new Set(sources.map(({ id }) => id));
+  const { contents, sourceIds, codes } = researchModelContext({ event: '測試事件' }, sources, allIds, rows, 'ollama');
+  assert.ok(Buffer.byteLength(contents, 'utf8') <= 33000);
+  assert.ok(codes.has('1000') && codes.size <= 140);
+  assert.equal(sourceIds.size, 14);
+  assert.equal(sourceIds.has('N18'), false);
+  const [direct] = eventCandidates({
+    modelStocks: [{ code: '2330', reason: '沒有引用到已提供的順序', evidence: ['N18'] }],
+    modelCodes: new Set(['2330']), eventSourceIds: allIds, modelSourceIds: sourceIds,
+    mentions: new Map([['2330', ['N18']]]), headlines: sources, companies
+  });
+  assert.equal(direct.impact, '方向未定');
+  assert.deepEqual(direct.evidence, ['N18']);
 });

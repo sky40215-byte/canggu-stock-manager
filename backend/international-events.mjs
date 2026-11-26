@@ -67,12 +67,34 @@ export function findCompanyMentions(headlines, companies) {
   return new Map([...evidence].sort(([, a], [, b]) => b.length - a.length));
 }
 
-export function eventCandidates({ modelStocks = [], modelCodes = new Set(), eventSourceIds, mentions, headlines, companies, limit = 8 }) {
+export function researchModelContext(query, sources, eventSourceIds, companies, provider) {
+  const compact = provider === 'ollama';
+  const availableSources = compact ? sources.slice(0, 14).map((item) => ({
+    id: item.id, type: item.type, title: clean(item.title, 130), date: clean(item.date, 60),
+    summary: clean(item.summary, 160), source: clean(item.source, 45),
+    ...(item.type === 'financial' && { value: item.value, unit: clean(item.unit, 20) })
+  })) : sources;
+  const sourceIds = new Set(availableSources.filter((item) => eventSourceIds.has(item.id)).map((item) => item.id));
+  const context = {
+    ...query, sources: availableSources, eventCitationIds: [...sourceIds],
+    availableTaiwanStocks: companies.slice(0, compact ? 140 : 250).map(({ code, name }) => ({ code, name: clean(name, 48) }))
+  };
+  let contents = JSON.stringify(context);
+  if (compact) {
+    while ((contents.length > 17000 || Buffer.byteLength(contents, 'utf8') > 33000) && context.availableTaiwanStocks.length) {
+      context.availableTaiwanStocks.splice(-20);
+      contents = JSON.stringify(context);
+    }
+  }
+  return { contents, sourceIds, codes: new Set(context.availableTaiwanStocks.map(({ code }) => code)) };
+}
+
+export function eventCandidates({ modelStocks = [], modelCodes = new Set(), eventSourceIds, modelSourceIds = eventSourceIds, mentions, headlines, companies, limit = 8 }) {
   const candidates = new Map();
   for (const item of Array.isArray(modelStocks) ? modelStocks : []) {
     const code = String(item?.code || '').trim();
     if (!modelCodes.has(code) || !companies.has(code) || candidates.has(code)) continue;
-    const evidence = [...new Set((Array.isArray(item.evidence) ? item.evidence : []).map(String).filter((id) => eventSourceIds.has(id)))].slice(0, 4);
+    const evidence = [...new Set((Array.isArray(item.evidence) ? item.evidence : []).map(String).filter((id) => modelSourceIds.has(id)))].slice(0, 4);
     const reason = clean(item.reason, 500);
     const explicitlyNamed = (mentions.get(code) || []).some((id) => evidence.includes(id));
     const mechanism = clean(item.mechanism, 240);

@@ -6,7 +6,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { topupApiResult } from '../frontend/portfolio-math.js';
-import { companyProfiles, eventCandidates, findCompanyMentions } from './international-events.mjs';
+import { companyProfiles, eventCandidates, findCompanyMentions, researchModelContext } from './international-events.mjs';
 import { holdingVisionModels, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength, openAIHoldingRateError } from './holding-vision.mjs';
 
 const BACKEND_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
@@ -815,7 +815,7 @@ async function askInternationalAnalysis(messages, marketContext, provider) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const request = attempt === 0 ? messages : [
       ...messages,
-      { role: 'assistant', content: lastError.rawAnswer.slice(0, 12000) },
+      { role: 'assistant', content: lastError.rawAnswer.slice(0, provider === 'ollama' ? 3500 : 12000) },
       { role: 'user', content: '請修正上一則回覆，只輸出合法 JSON 物件，必須包含 summary（字串）、industries（陣列）、stocks（陣列）、risks（陣列）。保留原有來源 ID，不要新增沒有來源支持的結論。' }
     ];
     const rawAnswer = await askAssistant(request, '國際事件與台股關聯研究', marketContext, provider, 'json');
@@ -1149,7 +1149,8 @@ const server = http.createServer(async (req, res) => {
       const modelRows = [...new Set([
         ...mentions.keys(), ...validRequestedCodes, ...marketRows.slice().sort((a, b) => Number(b.turnover || 0) - Number(a.turnover || 0)).map((row) => row.code), ...marketByCode.keys()
       ].map(String))].slice(0, 250).map((code) => marketByCode.get(code));
-      const modelCodes = new Set(modelRows.map((row) => row.code));
+      const query = { event, foreignCompany: companyName, ticker, userClues: relation, watchCodes: validRequestedCodes };
+      const { contents: modelContext, sourceIds: modelSourceIds, codes: modelCodes } = researchModelContext(query, sourceItems, eventSourceIds, modelRows, provider);
       const research = {
         event, foreignCompany: companyName, ticker, relation, headlines, newsStatus, sec,
         requestedCodes: validRequestedCodes, unrecognizedCodes: requestedCodes.filter((code) => !marketByCode.has(code)),
@@ -1167,18 +1168,13 @@ const server = http.createServer(async (req, res) => {
           '只輸出 JSON：{"summary":"事件摘要","industries":[{"name":"產業","impact":"可能影響","transmission":"可能傳導","evidence":["N1"]}],"stocks":[{"code":"2330","industry":"產業","impact":"可能受惠/可能承壓/雙向影響/方向未定","fact":"引用來源的事實","mechanism":"對此公司的具體影響途徑","reason":"逐檔原因","uncertainty":"反向因素或待查條件","horizon":"短期/中期/長期","evidence":["N1"]}],"risks":["待查事項"]}。',
           provider === 'ollama' ? '最多 3 個產業與 4 檔股票。每欄用短句。' : '最多 5 個產業與 8 檔股票。'
         ].join('\n') }];
-        const context = {
-          event, foreignCompany: companyName, ticker, userClues: relation, watchCodes: validRequestedCodes,
-          sources: sourceItems, eventCitationIds: [...eventSourceIds],
-          availableTaiwanStocks: modelRows.map(({ code, name }) => ({ code, name }))
-        };
         try {
-          analysis = await askInternationalAnalysis(question, JSON.stringify(context), provider);
+          analysis = await askInternationalAnalysis(question, modelContext, provider);
           analyzedBy = provider;
         } catch { warning = '模型未能完成整理，以下保留新聞與台股名錄的比對結果。'; }
       }
       const candidates = eventCandidates({
-        modelStocks: analysis?.stocks, modelCodes, eventSourceIds, mentions, headlines, companies: marketByCode
+        modelStocks: analysis?.stocks, modelCodes, eventSourceIds, modelSourceIds, mentions, headlines, companies: marketByCode
       });
       const candidateCodes = new Set(candidates.map((item) => item.code));
       const stockData = (item) => {
@@ -1187,7 +1183,7 @@ const server = http.createServer(async (req, res) => {
       };
       const clean = (value, length) => typeof value === 'string' ? value.trim().slice(0, length) : '';
       const industries = (analysis?.industries || []).flatMap((item) => {
-        const evidence = [...new Set((Array.isArray(item?.evidence) ? item.evidence : []).map(String).filter((id) => eventSourceIds.has(id)))].slice(0, 4);
+        const evidence = [...new Set((Array.isArray(item?.evidence) ? item.evidence : []).map(String).filter((id) => modelSourceIds.has(id)))].slice(0, 4);
         const name = clean(item?.name, 100), transmission = clean(item?.transmission, 400);
         return name && transmission && evidence.length ? [{ name, transmission, impact: clean(item.impact, 160), evidence }] : [];
       }).slice(0, 5);
