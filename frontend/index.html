@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
   <link rel="stylesheet" href="styles.css?v=20261126h">
-  <link rel="stylesheet" href="workbench.css?v=20261126i">
+  <link rel="stylesheet" href="workbench.css?v=20261126j">
 </head>
 <body>
   <div id="appShell" class="app-shell" hidden>
@@ -113,9 +113,10 @@
         <section id="portfolioSnapshot" class="desk-positions" aria-labelledby="deskPositionsTitle">
           <header class="desk-positions-header">
             <div><h2 id="deskPositionsTitle">持倉</h2><span id="overviewPositionCount"></span></div>
-            <div><a class="desk-text-button" href="#riskLab" id="overviewRiskLink">壓力測試</a><a class="desk-text-button" href="#holdings">管理持股 <span aria-hidden="true">↗</span></a></div>
+            <div><button class="desk-text-button desk-columns-toggle" id="overviewColumns" type="button" aria-expanded="false" aria-controls="overviewTable" hidden>完整欄位</button><a class="desk-text-button" href="#riskLab" id="overviewRiskLink">壓力測試</a><a class="desk-text-button" href="#holdings">管理持股 <span aria-hidden="true">↗</span></a></div>
           </header>
-          <div class="desk-table-scroll" id="overviewTable" role="region" aria-label="持倉明細" tabindex="0">
+          <p class="desk-table-help" id="overviewTableHelp" hidden>左右滑動可查看所有欄位。點選股票可開啟完整持倉。</p>
+          <div class="desk-table-scroll" id="overviewTable" role="region" aria-label="持倉明細" aria-describedby="overviewTableHelp" tabindex="0">
             <table class="desk-table" aria-label="所選市場持倉">
               <thead><tr>
                 <th scope="col"><button type="button" data-desk-sort="symbol">股票</button></th>
@@ -279,6 +280,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261126i"></script>
+  <script type="module" src="app.js?v=20261126j"></script>
 </body>
 </html>

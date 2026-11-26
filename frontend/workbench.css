@@ -24,7 +24,8 @@ body[data-eye-comfort="true"] .app-shell {
 }
 
 .app-shell [hidden], .desk-holding-dialog [hidden] { display: none !important; }
-.app-shell .main-content { max-width: 1740px; margin-left: var(--desk-sidebar); padding: 0 clamp(20px, 2.6vw, 44px) 32px; }
+.app-shell .main-content { max-width: none; margin-left: var(--desk-sidebar); padding: 0 clamp(20px, 2.6vw, 44px) 32px; }
+.app-shell .main-content > :is(.topbar, section) { width: 100%; max-width: 1740px; margin-inline: auto; }
 .app-shell .sidebar {
   width: var(--desk-sidebar);
   padding: 22px 15px;
@@ -146,6 +147,7 @@ body[data-eye-comfort="true"] .app-shell {
 .desk-positions-header h2 { color: var(--desk-ink); font-size: 16px; }
 #overviewPositionCount { font-size: 12px; color: var(--desk-muted); font-variant-numeric: tabular-nums; }
 .desk-table-scroll { max-height: min(53vh, 440px); overflow: auto; border-block-start: 1px solid var(--desk-line); border-radius: 0 0 6px 6px; }
+.desk-positions .desk-columns-toggle, .desk-positions .desk-table-help { display: none; }
 .desk-table { width: 100%; min-width: 640px; border-collapse: separate; border-spacing: 0; }
 .desk-table :is(td, th) { position: static; padding: 8px 12px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; vertical-align: middle; border-bottom: 1px solid var(--desk-line); }
 .desk-table :is(td, th):first-child { text-align: left; }
@@ -190,6 +192,26 @@ body[data-eye-comfort="true"] .app-shell {
 .app-shell .workspace-panel, .app-shell .workspace-panel:hover { border-radius: 6px; border-color: var(--desk-line); box-shadow: none; }
 .app-shell .workspace-panel-heading { padding: 8px 12px; background: var(--desk-soft); color: var(--desk-ink); border-color: var(--desk-line); }
 .app-shell .workspace-panel .section-heading h2 { font-size: 16px; }
+.workspace-panel-actions { display: flex; align-items: center; gap: 5px; }
+.workspace-panel-move { display: none; }
+.app-shell .workspace-panel-grid.is-stacked { display: grid; gap: 12px; height: auto; }
+.app-shell .workspace-panel-grid.is-stacked > .workspace-panel { position: relative; inset: auto !important; width: 100% !important; will-change: auto; }
+.app-shell .workspace-panel-grid.is-stacked .workspace-panel-heading { cursor: default; touch-action: auto; }
+.is-stacked .workspace-panel-actions :is(.workspace-panel-move, .workspace-panel-close) {
+  display: inline-grid;
+  place-items: center;
+  min-width: 38px;
+  min-height: 38px;
+  border: 1px solid var(--desk-line);
+  border-radius: 5px;
+  background: var(--desk-paper);
+  color: var(--desk-ink);
+  font: inherit;
+  font-size: 17px;
+  cursor: pointer;
+}
+.is-stacked .workspace-panel-move:disabled { opacity: .45; cursor: default; }
+.workspace-panel-heading:focus-visible { outline: 2px solid #308e83; outline-offset: -2px; }
 
 .desk-holding-dialog { width: min(510px, calc(100vw - 26px)); padding: 18px; border-radius: 8px; }
 .desk-holding-dialog .modal-heading p, .desk-detail-source { margin: 0 0 5px; color: var(--muted); font-size: 12px; }
@@ -209,15 +231,26 @@ body[data-eye-comfort="true"] .app-shell {
   .app-shell .sidebar { padding-inline: 11px; }
 }
 
-@media (max-width: 700px) {
-  .app-shell .main-content { padding: 0 12px 20px; margin-left: 0; }
-  .app-shell .sidebar { position: relative; width: auto; padding: 9px 12px; }
+@media (max-width: 900px), (max-width: 1100px) and (pointer: coarse) {
+  .app-shell .main-content { padding: 0 16px 20px; margin-left: 0; }
+  .app-shell .sidebar { position: relative; inset: auto; width: auto; max-height: none; padding: 9px 16px; }
+  .app-shell .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .app-shell .brand { padding: 0; }
   .app-shell .brand-mark { width: 29px; height: 29px; }
   .app-shell .brand b { font-size: 17px; }
+  .app-shell .mobile-nav-toggle {
+    display: block; min-height: 38px; padding: 6px 12px; border: 1px solid #59717b; border-radius: 6px;
+    background: #ffffff12; color: #fff; font: inherit; cursor: pointer;
+  }
   .app-shell #appNavigation { display: none; }
-  .app-shell .sidebar[data-mobile-open] #appNavigation { display: flex; max-height: min(48vh, 350px); }
+  .app-shell .sidebar[data-mobile-open] #appNavigation { display: flex; max-height: min(60dvh, 430px); margin-top: 8px; }
   .app-shell .nav-group { display: block; }
+}
+
+@media (max-width: 700px) {
+  .app-shell .main-content, .app-shell .sidebar {
+    padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
+  }
   .app-shell .topbar { min-height: 45px; padding: 5px 0; gap: 5px; }
   .app-shell .breadcrumb { width: auto; font-size: 10px; gap: 5px; }
   .app-shell .topbar-right { gap: 5px; }
@@ -230,12 +263,18 @@ body[data-eye-comfort="true"] .app-shell {
   .desk-summary small, .desk-secondary-totals small { font-size: 10px; }
   .desk-market-strip summary { column-gap: 6px; row-gap: 1px; }
   .desk-positions-header { padding: 6px 7px 6px 10px; }
-  .desk-table-scroll { max-height: min(53vh, 385px); }
+  .desk-table-scroll { max-height: none; }
 }
 
-@media (max-width: 520px) {
-  .desk-table { min-width: 0; }
-  .desk-table :is(th, td):is(:nth-child(2), :nth-child(3), :nth-child(5)) { display: none; }
+@media (max-width: 680px) {
+  .desk-table-scroll:not(.show-all-columns) .desk-table { min-width: 0; }
+  .desk-table-scroll:not(.show-all-columns) :is(th, td):is(:nth-child(2), :nth-child(3), :nth-child(5)) { display: none; }
+  .desk-positions .desk-columns-toggle { display: inline-flex; }
+  .desk-positions .desk-table-help { display: block; margin: 0; padding: 0 10px 8px; color: var(--desk-muted); font-size: 11px; }
+  .desk-table-scroll.show-all-columns { overscroll-behavior-inline: contain; }
+  .desk-table-scroll.show-all-columns :is(th, td):first-child { position: sticky; left: 0; border-inline-end: 1px solid var(--desk-line); }
+  .desk-table-scroll.show-all-columns tbody th:first-child { z-index: 1; background: var(--desk-paper); }
+  .desk-table-scroll.show-all-columns thead th:first-child { z-index: 2; }
   .desk-table :is(th, td) { padding-inline: 7px; }
   .desk-table td { font-size: 12px; }
   .desk-table thead button { font-size: 11px; }
@@ -246,4 +285,21 @@ body[data-eye-comfort="true"] .app-shell {
 
 @media (max-width: 360px) {
   .desk-page-heading .overview-hero-actions { width: 100%; }
+  .desk-positions-header > div + div { flex-basis: 100%; justify-content: space-between; }
+  .app-shell .workspace-toolbar { flex-wrap: wrap; }
+}
+
+@media (pointer: coarse) {
+  .app-shell .quick-search-trigger kbd { display: none; }
+  .app-shell .nav-group .nav-link, .app-shell .nav-group summary,
+  .app-shell .nav-workspace, .app-shell .mobile-nav-toggle, .app-shell .quick-search-trigger,
+  .desk-settings > summary, .desk-settings-panel > :is(button, a),
+  .desk-page-heading :is(button, select), .desk-market-strip > button, .desk-positions-header .desk-text-button,
+  .desk-table thead button, .desk-position-link,
+  .is-stacked .workspace-panel-actions :is(.workspace-panel-move, .workspace-panel-close) { min-height: 44px; }
+  .is-stacked .workspace-panel-actions :is(.workspace-panel-move, .workspace-panel-close) { min-width: 44px; }
+}
+
+@media (max-height: 460px) and (orientation: landscape) {
+  .app-shell .topbar { position: static; }
 }

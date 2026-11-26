@@ -380,6 +380,8 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     });
     $('overviewPositionCount').textContent = `${rows.length} 筆`;
     $('overviewTable').hidden = !rows.length;
+    $('overviewColumns').hidden = !rows.length;
+    $('overviewTableHelp').hidden = !rows.length || $('overviewColumns').getAttribute('aria-expanded') !== 'true';
     $('overviewEmpty').hidden = Boolean(rows.length);
     $('overviewEmpty').textContent = rows.length ? '' : `尚無${marketLabels[market]}持股。可使用上方「新增持股」。`;
     for (const button of $('overviewTable').querySelectorAll('[data-desk-sort]')) {
@@ -1009,6 +1011,15 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     else refreshSelectedMarketHoldings();
   });
   $('refreshMarketHoldings').addEventListener('click', () => refreshSelectedMarketHoldings(true));
+  $('overviewColumns').addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    const expanded = button.getAttribute('aria-expanded') === 'false';
+    button.setAttribute('aria-expanded', String(expanded));
+    button.textContent = expanded ? '精簡欄位' : '完整欄位';
+    $('overviewTable').classList.toggle('show-all-columns', expanded);
+    $('overviewTable').scrollLeft = 0;
+    $('overviewTableHelp').hidden = !expanded;
+  });
   $('overviewTable').addEventListener('click', (event) => {
     const button = event.target.closest('[data-desk-sort]');
     if (!button) return;
@@ -1744,6 +1755,8 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
   const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', riskLab: '持倉壓力測試', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢與自選', candidates: '候選股篩選', watchlist: '價格觀察紀錄', news: '新聞與公告', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究來源', workspace: '多功能工作區' };
   const workspaceGrid = $('workspacePanelGrid'), workspaceHome = new Map();
+  const workspaceTouch = window.matchMedia('(pointer: coarse)');
+  const workspaceStacked = () => workspaceGrid.clientWidth < (workspaceTouch.matches ? 920 : 700);
   const workspaceFeatureIds = Object.keys(pageTitles).filter((id) => !['overview', 'workspace'].includes(id));
   workspaceFeatureIds.forEach((id) => { const element = $(id); if (element?.parentElement) workspaceHome.set(id, { parent: element.parentElement, next: element.nextElementSibling }); });
   let workspaceOpenPages = [];
@@ -1771,11 +1784,12 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   const persistWorkspace = () => { try { localStorage.setItem('duanguWorkspacePages', JSON.stringify(workspaceOpenPages)); } catch { /* Workspace layout remains usable without browser storage. */ } };
   function saveWorkspacePosition(panel) {
     const width = workspaceGrid.clientWidth || 1;
-    if (width < 700) return;
+    if (workspaceStacked()) return;
     workspacePositions[panel.dataset.page] = { x: panel.offsetLeft / width, y: panel.offsetTop, w: panel.offsetWidth / width };
     persistWorkspacePositions();
   }
   function updateWorkspaceCanvasHeight() {
+    if (workspaceGrid.classList.contains('is-stacked')) { workspaceGrid.style.height = ''; return; }
     const bottom = [...workspaceGrid.querySelectorAll('.workspace-panel')].reduce((max, panel) => Math.max(max, panel.offsetTop + panel.offsetHeight), 0);
     workspaceGrid.style.height = bottom ? (bottom + 18) + 'px' : '0px';
   }
@@ -1783,7 +1797,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     let operation = null;
     panel.addEventListener('pointerdown', () => { workspaceZIndex += 1; panel.style.zIndex = String(workspaceZIndex); });
     heading.addEventListener('pointerdown', (event) => {
-      if (workspaceGrid.clientWidth < 700 || event.button !== 0 || event.target.closest('button')) return;
+      if (workspaceStacked() || event.button !== 0 || event.target.closest('button')) return;
       event.preventDefault();
       operation = { type: 'move', pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: panel.offsetLeft, top: panel.offsetTop };
       activeWorkspacePanel = panel;
@@ -1791,7 +1805,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       heading.setPointerCapture(event.pointerId);
     });
     resizeHandle.addEventListener('pointerdown', (event) => {
-      if (workspaceGrid.clientWidth < 700 || event.button !== 0) return;
+      if (workspaceStacked() || event.button !== 0) return;
       event.preventDefault(); event.stopPropagation();
       operation = { type: 'resize', pointerId: event.pointerId, startX: event.clientX, width: panel.offsetWidth };
       activeWorkspacePanel = panel;
@@ -1819,7 +1833,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     heading.addEventListener('pointermove', move); heading.addEventListener('pointerup', finish); heading.addEventListener('pointercancel', finish);
     resizeHandle.addEventListener('pointermove', move); resizeHandle.addEventListener('pointerup', finish); resizeHandle.addEventListener('pointercancel', finish);
     resizeHandle.addEventListener('keydown', (event) => {
-      if (workspaceGrid.clientWidth < 700 || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      if (workspaceStacked() || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
       event.preventDefault();
       const available = workspaceGrid.clientWidth - panel.offsetLeft;
       const width = Math.max(Math.min(available, 300), Math.min(available, panel.offsetWidth + (event.key === 'ArrowRight' ? 32 : -32)));
@@ -1840,13 +1854,14 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   }
   function flowWorkspacePanels() {
     if (activeWorkspacePanel) return;
-    const width = workspaceGrid.clientWidth;
-    if (!width) return;
-    const narrow = width < 700, bottoms = [0, 0], automatic = [];
+    if (!workspaceGrid.clientWidth) return;
+    const narrow = workspaceStacked(), bottoms = [0, 0], automatic = [];
+    workspaceGrid.classList.toggle('is-stacked', narrow);
     for (const panel of workspaceGrid.querySelectorAll('.workspace-panel')) {
       panel.querySelector('.workspace-panel-resize').hidden = narrow;
       const saved = workspacePositions[panel.dataset.page];
-      if (narrow || !saved || ![saved.x, saved.y, saved.w].every(Number.isFinite)) {
+      if (narrow) continue;
+      if (!saved || ![saved.x, saved.y, saved.w].every(Number.isFinite)) {
         automatic.push(panel);
         continue;
       }
@@ -1859,8 +1874,8 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     }
     for (const panel of automatic) {
       const preferred = workspaceColumns[panel.dataset.page];
-      const col = narrow ? 0 : preferred === 0 || preferred === 1 ? preferred : Number(bottoms[1] < bottoms[0]);
-      panel.style.left = col ? '51%' : '0%'; panel.style.width = narrow ? '100%' : '49%'; panel.style.top = bottoms[col] + 'px';
+      const col = preferred === 0 || preferred === 1 ? preferred : Number(bottoms[1] < bottoms[0]);
+      panel.style.left = col ? '51%' : '0%'; panel.style.width = '49%'; panel.style.top = bottoms[col] + 'px';
       bottoms[col] += panel.offsetHeight + 14;
     }
     for (const [id, data, redraw] of [['trendChart', trendData, drawTrendChart], ['heldStockChart', heldStockData, drawHoldingCandles]]) {
@@ -1889,6 +1904,24 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     $('saveWorkspaceLayout').disabled = !workspaceOpenPages.length;
     $('workspaceReset').disabled = !workspaceOpenPages.length;
     $('workspaceAddFeature').disabled = !$('workspaceFeatureSelect').value;
+    [...workspaceGrid.children].forEach((panel, index, panels) => {
+      panel.querySelector('[data-panel-move="-1"]').disabled = index === 0;
+      panel.querySelector('[data-panel-move="1"]').disabled = index === panels.length - 1;
+    });
+  }
+  function moveStackedWorkspacePanel(panel, step) {
+    const target = step < 0 ? panel.previousElementSibling : panel.nextElementSibling;
+    if (!target) return;
+    const index = workspaceOpenPages.indexOf(panel.dataset.page);
+    if (index < 0) return;
+    [workspaceOpenPages[index], workspaceOpenPages[index + step]] = [workspaceOpenPages[index + step], workspaceOpenPages[index]];
+    if (step < 0) target.before(panel);
+    else target.after(panel);
+    persistWorkspace();
+    updateWorkspaceControls();
+    panel.querySelector(`[data-panel-move="${step}"]:not([disabled])`)?.focus({ preventScroll: true });
+    if (!panel.contains(document.activeElement)) panel.querySelector('.workspace-panel-heading').focus({ preventScroll: true });
+    scheduleWorkspaceLayout();
   }
   function renderWorkspacePanels() {
     restoreWorkspacePanels();
@@ -1896,11 +1929,24 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       const element = $(id), home = workspaceHome.get(id);
       if (!element || !home) return;
       const panel = document.createElement('article'); panel.className = 'workspace-panel'; panel.dataset.page = id;
-      const heading = document.createElement('header'); heading.className = 'workspace-panel-heading';
+      const heading = document.createElement('header'); heading.className = 'workspace-panel-heading'; heading.tabIndex = -1;
       const title = document.createElement('b'); title.textContent = pageTitles[id];
       const close = document.createElement('button'); close.type = 'button'; close.className = 'workspace-panel-close'; close.setAttribute('aria-label', `關閉${pageTitles[id]}`); close.textContent = '×';
       close.addEventListener('click', () => { workspaceOpenPages = workspaceOpenPages.filter((item) => item !== id); persistWorkspace(); renderWorkspacePanels(); updateWorkspaceControls(); });
-      heading.append(title, close);
+      const actions = document.createElement('div');
+      actions.className = 'workspace-panel-actions';
+      for (const [step, label, glyph] of [[-1, '上移', '↑'], [1, '下移', '↓']]) {
+        const move = document.createElement('button');
+        move.type = 'button';
+        move.className = 'workspace-panel-move';
+        move.dataset.panelMove = String(step);
+        move.textContent = glyph;
+        move.setAttribute('aria-label', `${label}${pageTitles[id]}面板`);
+        move.addEventListener('click', () => moveStackedWorkspacePanel(panel, step));
+        actions.append(move);
+      }
+      actions.append(close);
+      heading.append(title, actions);
       const resizeHandle = document.createElement('button'); resizeHandle.type = 'button'; resizeHandle.className = 'workspace-panel-resize'; resizeHandle.setAttribute('aria-label', `拖曳調整${pageTitles[id]}視窗大小`); resizeHandle.title = '拖曳調整大小'; resizeHandle.textContent = '◢';
       panel.append(heading, element, resizeHandle); workspaceGrid.append(panel); element.hidden = false;
       enablePanelDragging(panel, heading, resizeHandle);
@@ -1930,6 +1976,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     $('workspaceLayoutMenu').open = false;
   });
   window.addEventListener('resize', scheduleWorkspaceLayout);
+  workspaceTouch.addEventListener('change', scheduleWorkspaceLayout);
   const workspaceLayoutSelect = $('workspaceLayout');
   const allWorkspaceLayouts = () => [...workspacePresets, ...customWorkspaceLayouts];
   function refreshWorkspaceLayouts(selection = workspaceLayoutSelect.value) {
@@ -2023,6 +2070,12 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     $('mobileNavToggle').setAttribute('aria-expanded', String(open));
   }
   $('mobileNavToggle').addEventListener('click', () => setMobileNav(!$('appSidebar').hasAttribute('data-mobile-open')));
+  $('appSidebar').addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !$('appSidebar').hasAttribute('data-mobile-open')) return;
+    event.preventDefault();
+    setMobileNav(false);
+    $('mobileNavToggle').focus();
+  });
   document.querySelector('.sidebar nav').addEventListener('click', (event) => {
     const link = event.target.closest('.nav-link');
     if (!link) return;
