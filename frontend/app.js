@@ -955,6 +955,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126e';
   $('stockWatchlist').addEventListener('change', (event) => { const select = event.target.closest('[data-watch-group]'); if (!select) return; state.watchlistGroups[select.dataset.watchGroup] = select.value; persist(); renderStockWatchlist(); showToast(`已移至「${select.value}」分組。`); });
   $('watchlistGroupFilter').addEventListener('change', renderStockWatchlist);
   $('watchlistSort').addEventListener('change', renderStockWatchlist);
+  $('reloadPage').addEventListener('click', () => window.location.reload());
   $('refreshQuotes').addEventListener('click', refreshQuotes);
   $('refreshCandidates').addEventListener('click', refreshQuotes);
   $('refreshNews').addEventListener('click', refreshNews);
