@@ -74,6 +74,7 @@ body{background:linear-gradient(130deg,#edf3f5 0%,#f4f6f7 52%,#f2f5f2 100%);colo
 .account-card h1 { margin: 0; font-size: 26px; color: #17394b; }
 .account-card > p { margin: 8px 0 17px; color: #506975; font-size: 14px; line-height: 1.65; }
 .account-card form label { display: block; margin: 11px 0; color: #365360; font-size: 13px; font-weight: 600; }
+.account-field-hint { margin: -4px 0 10px; color: #506975; font-size: 13px; line-height: 1.55; }
 .account-card input {
   display: block; width: 100%; min-height: 44px; margin-top: 5px; padding: 7px 11px;
   border: 1px solid #a6b9bf; border-radius: 8px; font: 16px var(--font);

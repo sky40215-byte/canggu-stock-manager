@@ -22,6 +22,8 @@
 
 在 Supabase Authentication 啟用 **Confirm email**，並將正式站首頁設為 Site URL 及允許導向網址。本機開發要測信件連結時，另加入實際使用的本機網址。
 
+端股註冊和重設密碼要求至少 12 個字元，包含英文大寫、小寫、數字及特殊符號各一個。在 **Authentication → Sign In / Providers → Email** 將 **Minimum password length** 設為 `12`，並在 **Password requirements** 選擇同時要求上述四類字元，讓 Supabase 也能在伺服器端檢查。既有使用者仍可用原密碼登入。
+
 在 **Email Templates** 的 **Confirm signup** 和 **Reset password** 內加入以下一行。保留原本的確認或重設連結，使用者也可以在端股輸入驗證碼。
 
 ```html

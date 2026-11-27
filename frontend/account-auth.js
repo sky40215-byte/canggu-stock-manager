@@ -1,10 +1,18 @@
+const minimumPasswordLength = 12;
+const passwordRules = [
+  ['英文大寫字母', /[A-Z]/],
+  ['英文小寫字母', /[a-z]/],
+  ['數字', /[0-9]/],
+  ['特殊符號（如 !、@、#）', /[!@#$%^&*()_+\-=[\]{};'\\:"|<>?,.\/\x60~]/]
+];
+
 const views = {
   login: ['登入端股', '登入後可在電腦和手機查看同一份持股、交易與自選清單。', '登入'],
   signup: ['建立帳號', '設定暱稱與密碼，再到電子郵件收取註冊驗證信。', '建立帳號'],
   signupCode: ['驗證電子郵件', '請輸入驗證信中的數字，或直接點選信中的確認連結。', '驗證帳號'],
   forgot: ['忘記密碼', '輸入登入端股時使用的電子郵件。', '寄送重設密碼信'],
   recoveryCode: ['驗證重設請求', '請輸入重設信中的數字，或點選信中的重設連結。', '驗證後設定新密碼'],
-  reset: ['設定新密碼', '請輸入至少 8 個字元，並再輸入一次確認。', '儲存新密碼']
+  reset: ['設定新密碼', '輸入新密碼，再輸入一次確認。', '儲存新密碼']
 };
 
 const sentMessages = {
@@ -38,6 +46,7 @@ export function mountAccountAuth({ auth, createRecoveryAuth, onSession, onShowGa
   const $ = (id) => document.getElementById(id);
   const form = $('accountForm'), status = $('accountStatus'), submit = $('accountSubmit');
   const email = $('accountEmail'), password = $('accountPassword'), confirm = $('accountConfirm');
+  const passwordHint = $('accountPasswordHint');
   const nickname = $('accountNickname'), code = $('accountCode');
   const toggle = $('accountModeToggle'), forgot = $('accountForgot'), verify = $('accountVerify'), resend = $('accountResend');
   const profile = $('accountProfileBtn'), profileDialog = $('accountProfileDialog'), profileInput = $('accountProfileName');
@@ -66,9 +75,9 @@ export function mountAccountAuth({ auth, createRecoveryAuth, onSession, onShowGa
     $('accountIntro').textContent = views[view][1];
     $('accountPasswordLabel').textContent = view === 'reset' ? '新密碼' : '密碼';
     password.autocomplete = newPassword ? 'new-password' : 'current-password';
-    if (newPassword) password.minLength = 8;
-    else password.removeAttribute('minlength');
-    password.placeholder = newPassword ? '至少 8 個字元' : '';
+    passwordHint.hidden = !newPassword;
+    if (newPassword) password.setAttribute('aria-describedby', passwordHint.id);
+    else password.removeAttribute('aria-describedby');
     toggle.textContent = view === 'login' ? '建立帳號' : '返回登入';
     forgot.hidden = verify.hidden = view !== 'login';
     resend.hidden = !hasCode;
@@ -142,8 +151,16 @@ export function mountAccountAuth({ auth, createRecoveryAuth, onSession, onShowGa
     const address = view === 'reset' ? '' : requireEmail();
     if (view !== 'reset' && !address) return;
     if (['signup', 'reset'].includes(view)) {
-      if (password.value.length < 8) {
-        setStatus('密碼須至少 8 個字元。', 'error');
+      const missing = passwordRules.filter(([, pattern]) => !pattern.test(password.value)).map(([label]) => label);
+      const tooShort = [...password.value].length < minimumPasswordLength;
+      const tooLong = new TextEncoder().encode(password.value).length > 72;
+      if (tooShort || tooLong || missing.length) {
+        const requirements = [
+          tooShort && `密碼須至少 ${minimumPasswordLength} 個字元。`,
+          tooLong && '密碼太長，請縮短後再試。',
+          missing.length > 0 && `請加入${missing.join('、')}。`
+        ];
+        setStatus(requirements.filter(Boolean).join(' '), 'error');
         password.focus();
         return;
       }

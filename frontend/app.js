@@ -3,7 +3,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261126k';
 import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
-import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=20261128a';
+import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=20261128b';
 
 (() => {
   'use strict';
