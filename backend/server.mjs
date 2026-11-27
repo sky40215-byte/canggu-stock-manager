@@ -6,6 +6,7 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { topupApiResult } from '../frontend/portfolio-math.js';
+import { dividendDate, normalizeCashDividends } from '../frontend/cash-dividends.js';
 import { companyProfiles, eventCandidates, findCompanyMentions, researchModelContext } from './international-events.mjs';
 import { holdingVisionModels, holdingVisionRequest, holdingVisionRows, isHoldingJpeg, maxHoldingImageLength, openAIHoldingRateError } from './holding-vision.mjs';
 
@@ -51,6 +52,7 @@ const OLLAMA_PROXY_TOKEN = process.env.OLLAMA_PROXY_TOKEN || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const fundamentalsCache = new Map();
+const cashDividendCache = new Map();
 const globalMarketCache = new Map();
 let marketQuotesCache = { data: null, expiresAt: 0 };
 const secTickerCache = { expiresAt: 0, data: null };
@@ -101,6 +103,16 @@ async function finMindDataset(dataset, symbol, startDate) {
   if (Number(payload.status) === 402) throw new Error('FinMind API 使用額度已達上限（402）。');
   if (payload.status !== 200 || !Array.isArray(payload.data)) throw new Error(payload.msg || 'FinMind 暫時無法提供資料。');
   return payload.data;
+}
+function stockCashDividends(code) {
+  const cached = cashDividendCache.get(code);
+  if (cached && cached.expires > Date.now()) return cached.promise;
+  const entry = { expires: Date.now() + 3600000, promise: null };
+  entry.promise = finMindDataset('TaiwanStockDividend', code, dividendDate(-540)).then((rows) => normalizeCashDividends(code, rows));
+  entry.promise.catch(() => { if (cashDividendCache.get(code) === entry) cashDividendCache.delete(code); });
+  cashDividendCache.set(code, entry);
+  if (cashDividendCache.size > 512) cashDividendCache.delete(cashDividendCache.keys().next().value);
+  return entry.promise;
 }
 async function fundamentals(symbol) {
   const cached = fundamentalsCache.get(symbol);
@@ -1067,6 +1079,20 @@ const server = http.createServer(async (req, res) => {
       const companies = await publicTaiwanCompanies();
       if (!companies.length) return send(res, 502, { error: '目前無法讀取上市櫃產業資料。' });
       return send(res, 200, { industries: Object.fromEntries(companies.map(({ code, industryCode }) => [code, industryCode])) });
+    }
+    if (url.pathname === '/api/market/dividends' && req.method === 'GET') {
+      if ((process.env.NODE_ENV === 'production' || SUPABASE_URL) && !await requireAuthenticatedUser(req, res)) return;
+      const codes = [...new Set((url.searchParams.get('symbols') || '').split(','))];
+      if (codes.length > 20 || codes.some((code) => !/^\d{4,6}[A-Z]?$/.test(code))) return send(res, 400, { error: '請輸入 1 至 20 個台股代號。' });
+      const series = [];
+      for (let index = 0; index < codes.length; index += 5) {
+        const batch = await Promise.all(codes.slice(index, index + 5).map(async (code) => {
+          try { return { code, items: await stockCashDividends(code) }; }
+          catch { return { code, error: '配息資料暫時無法取得。' }; }
+        }));
+        series.push(...batch);
+      }
+      return send(res, 200, { series });
     }
     if (url.pathname === '/api/market/stock-factors' && req.method === 'GET') {
       if (!await requireAuthenticatedUser(req, res)) return;

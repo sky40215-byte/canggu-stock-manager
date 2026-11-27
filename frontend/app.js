@@ -5,6 +5,7 @@ import { mountPortfolioStress } from './portfolio-stress.js?v=20261126k';
 import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
 import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=20261128b';
 import { mountMarketPerformance } from './market-performance.js?v=20261128c';
+import { dividendDate, dividendStockMatches, dividendSymbol, mountDividendTracker, recordedDividend } from './cash-dividends.js?v=20261128d';
 
 (() => {
   'use strict';
@@ -212,7 +213,7 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
     if (error) { $('syncBadge').innerHTML = '<i></i>同步檢查失敗'; return; }
     if (data?.data && data.updated_at > lastCloudUpdatedAt) { state = normalizePortfolio(data.data); lastCloudUpdatedAt = data.updated_at; persistLocalOnly(); render(); }
   }
-  function refreshVisibleData() { pullCloudData(); if (servicesStarted && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes(); }
+  function refreshVisibleData() { pullCloudData(); if (servicesStarted && Date.now() - lastQuoteFetchAt > 60000) refreshQuotes(); if (servicesStarted) void dividendTracker.refresh(); }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshVisibleData(); });
   window.addEventListener('focus', refreshVisibleData);
   setInterval(pullCloudData, 45000);
@@ -290,6 +291,7 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
     renderTrend();
     renderLedger(); renderAllocation(); renderAlerts(); renderJournal(); renderTopupReviewReminders();
     renderStockWatchlist(); renderEvents(); applyEyeComfort();
+    void dividendTracker.refresh();
   }
   function renderOverviewSummary(market, holdings) {
     const totals = marketTotals(holdings, livePrice, holdingCurrency);
@@ -1208,8 +1210,12 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
   function applyTransaction(portfolio, transaction) {
     const { type, stock, date, shares, price, fees, tax } = transaction;
     if (!stock || shares <= 0 || price < 0 || fees < 0 || tax < 0) return '請檢查交易資料。';
-    if (!date || date > isoToday()) return '交易日期不能晚於今天。';
+    if (!date || date > (transaction.dividendKey ? dividendDate() : isoToday())) return '交易日期不能晚於今天。';
     const code = stockCode(stock);
+    if (type === 'dividend' && !transaction.dividendKey && portfolio.transactions.some((row) => row.type === 'dividend' && row.dividendKey
+        && (row.date === date || row.dividendPaymentDate === date) && dividendStockMatches(stock, dividendSymbol(row.stock), row.stock))) {
+      return '這檔股票在同日期已有確認的股息紀錄，請先核對帳本。';
+    }
     if (type !== 'dividend' && portfolio.transactions.some((row) => row.type !== 'dividend' && !row.recordOnly && row.date > date
         && ((code && stockCode(row.stock) === code) || row.stock.toLowerCase() === stock.toLowerCase()))) {
       return '此股票已有較晚的成交紀錄。請按成交日期順序記錄，避免平均成本與已實現損益錯置。';
@@ -1230,7 +1236,7 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
       realizedPnl = shares * (price - num(holding.cost)) - fees - tax; holding.shares = num(holding.shares) - shares; holding.price = price;
       if (holding.shares <= 0.0000001) portfolio.holdings = portfolio.holdings.filter((item) => item.id !== holding.id);
     }
-    portfolio.transactions.push({ ...transaction, id: crypto.randomUUID(), realizedPnl });
+    portfolio.transactions.push({ ...transaction, id: transaction.dividendKey ? `cash-dividend:${transaction.dividendKey}` : crypto.randomUUID(), realizedPnl });
     return '';
   }
   $('addAlert').addEventListener('click', () => {
@@ -2149,6 +2155,70 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
       return { code, name: item.name, shares: num(item.shares), price: quote?.price ?? num(item.price), backup: !quote };
     })
   });
+  let dividendReview = null, dividendQuoteReference, dividendCodeByName;
+  function portfolioForDividends() {
+    if (dividendQuoteReference !== quoteMap) {
+      dividendQuoteReference = quoteMap;
+      dividendCodeByName = new Map();
+      for (const { code, name } of quoteMap.values()) {
+        if (!name) continue;
+        const key = name.trim().normalize('NFKC');
+        dividendCodeByName.set(key, dividendCodeByName.has(key) ? '' : String(code));
+      }
+    }
+    const holdings = state.holdings.map((item) => {
+      if (holdingMarket(item) !== 'tw' || item.symbol || dividendSymbol(item.name)) return item;
+      return { ...item, symbol: dividendCodeByName.get(String(item.name || '').trim().normalize('NFKC')) || '' };
+    });
+    return { holdings, transactions: state.transactions };
+  }
+  const dividendIdentity = () => cloudUser?.id || 'local';
+  const dividendTracker = mountDividendTracker({
+    panel: $('dividendTracker'), overview: $('dividendPendingLink'), getPortfolio: portfolioForDividends, getIdentity: dividendIdentity, escape: esc, money,
+    async fetchAnnouncements(codes) {
+      const url = `/api/market/dividends?${new URLSearchParams({ symbols: codes.join(',') })}`;
+      const response = await (supabaseClient ? fugleFetch(url) : fetch(url, { cache: 'no-store' }));
+      const data = await response.json();
+      if (!response.ok || !Array.isArray(data.series)) throw new Error('無法讀取現金股息公告。');
+      return data.series;
+    },
+    onReview(event) {
+      dividendReview = { event, identity: dividendIdentity() };
+      $('dividendReviewForm').reset();
+      $('dividendReviewDetails').textContent = `${event.name} · 除息日 ${event.exDate} · 公告每股 NT$ ${event.price.toLocaleString('zh-TW', { maximumFractionDigits: 8 })}`;
+      $('dividendReviewShares').value = event.shares ?? '';
+      $('dividendReviewDate').min = event.exDate;
+      $('dividendReviewDate').max = dividendDate();
+      $('dividendReviewDate').value = event.paymentDate;
+      $('dividendReviewDialog').showModal();
+      (event.shares == null ? $('dividendReviewShares') : $('dividendReviewAmount')).focus();
+    }
+  });
+  $('dividendReviewDialog').addEventListener('close', () => { dividendReview = null; });
+  $('dividendReviewForm').addEventListener('submit', (submitEvent) => {
+    submitEvent.preventDefault();
+    if (!dividendReview || dividendReview.identity !== dividendIdentity()) return;
+    const { event } = dividendReview;
+    const date = $('dividendReviewDate').value;
+    const receivedAmount = $('dividendReviewAmount').valueAsNumber;
+    const shares = $('dividendReviewShares').valueAsNumber;
+    if (recordedDividend(state.transactions, event, event.name) || recordedDividend(state.transactions, { ...event, paymentDate: date }, event.name)) {
+      $('dividendReviewDialog').close();
+      void dividendTracker.refresh();
+      return showToast('此筆配息已有股利紀錄。');
+    }
+    if (!event.paymentDate || event.paymentDate > dividendDate() || date < event.exDate || !Number.isFinite(receivedAmount) || receivedAmount <= 0 || !Number.isFinite(shares) || shares <= 0) {
+      return showToast('請核對符合資格的股數、實際收款日與金額。');
+    }
+    const error = applyTransaction(state, {
+      type: 'dividend', stock: dividendSymbol(event.name) === event.code ? event.name : `${event.code} ${event.name}`, date,
+      shares, price: event.price, fees: 0, tax: 0,
+      note: `現金股息 · 除息日 ${event.exDate}`, dividendKey: event.key, dividendPaymentDate: event.paymentDate, receivedAmount
+    });
+    if (error) return showToast(error);
+    persist(); $('dividendReviewDialog').close(); render(); showToast('已按實收金額登錄股息。');
+  });
+  setInterval(() => { if (servicesStarted && !document.hidden) void dividendTracker.refresh(); }, 60000);
   const stressLab = mountPortfolioStress($('riskLab'), {
     getPositions: () => state.holdings.map((item) => {
       const quote = holdingQuote(item), currency = holdingCurrency(item);
@@ -2200,7 +2270,7 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
   });
   function updateTransactionLabel() { const dividend = $('transactionType').value === 'dividend'; $('transactionPriceLabel').firstChild.textContent = dividend ? '每股股利' : '成交價（每股）'; }
   function openStockAnalysis(code) { $('trendSymbol').value = code; showPage('trendAnalysis', true); $('loadTrend').click(); }
-  function netDividend(row) { return num(row.shares) * num(row.price) - num(row.fees) - num(row.tax); }
+  function netDividend(row) { return Number.isFinite(row.receivedAmount) ? row.receivedAmount : num(row.shares) * num(row.price) - num(row.fees) - num(row.tax); }
   function renderLedger() {
     const typeFilter = $('ledgerTypeFilter').value, query = $('ledgerTextFilter').value.trim().toLocaleLowerCase();
     const rows = [...state.transactions].reverse().filter((row) => (!typeFilter || row.type === typeFilter) && String(row.stock).toLocaleLowerCase().includes(query))
@@ -2210,7 +2280,7 @@ import { mountMarketPerformance } from './market-performance.js?v=20261128c';
       const fees = num(row.fees) + num(row.tax);
       const amount = row.type === 'dividend' ? netDividend(row) : row.type === 'sell' ? num(row.realizedPnl) : -(num(row.shares) * num(row.price) + fees);
       const amountCell = row.type === 'sell' && row.recordOnly ? '<td>待核算</td>' : `<td class="${amount < 0 ? 'negative' : 'positive'}">${money(amount)}</td>`;
-      return `<tr><td>${esc(row.date)}</td><td>${esc(row.stock)}${row.note || row.recordOnly ? `<small class="stock-sub">${esc(row.note || '僅存紀錄')}</small>` : ''}</td><td>${type}</td><td>${num(row.shares).toLocaleString('zh-TW')}</td><td>${money(row.price)}</td><td>${money(fees)}</td>${amountCell}</tr>`;
+      return `<tr><td>${esc(row.date)}</td><td>${esc(row.stock)}${row.note || row.recordOnly ? `<small class="stock-sub">${esc(row.note || '僅存紀錄')}</small>` : ''}</td><td>${type}</td><td>${num(row.shares).toLocaleString('zh-TW')}</td><td>${money(row.price)}</td><td>${Number.isFinite(row.receivedAmount) ? '已反映於實收金額' : money(fees)}</td>${amountCell}</tr>`;
     }).join('');
     $('emptyTransactions').hidden = rows.length > 0;
     $('emptyTransactions').querySelector('b').textContent = state.transactions.length ? '沒有符合篩選的交易' : '還沒有交易紀錄';

@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261128c">
+  <link rel="stylesheet" href="styles.css?v=20261128d">
   <link rel="stylesheet" href="workbench.css?v=20261126l">
 </head>
 <body>
@@ -135,7 +135,7 @@
 
         <div id="overviewTaiwanTotals" class="desk-secondary-totals" aria-label="台股損益與股利">
           <article><div>已實現損益 <small id="realizedPnlNote"></small></div><strong class="metric" id="realizedPnl">—</strong></article>
-          <article><div>累計股利 <small>依已登錄的股利紀錄，扣除費用與稅</small></div><strong class="metric" id="dividendTotal">—</strong></article>
+          <article><div>累計股利 <small>依已登錄的股利紀錄，扣除費用與稅</small><a id="dividendPendingLink" href="#ledger" hidden></a></div><strong class="metric" id="dividendTotal">—</strong></article>
         </div>
       </section>
 
@@ -190,7 +190,17 @@
         <div class="table-footnote"><span class="info-dot">i</span> 市值與損益為估算值；交易紀錄會扣手續費、交易稅，股利另行累計。</div>
       </section>
 
-      <section id="ledger" class="content-card feature-card"><div class="section-heading"><div><h2>交易與股利紀錄</h2><p class="news-intro">記錄台股買賣、股利與交易費用。</p></div><div class="heading-actions ledger-heading-actions"><button class="secondary-button" id="openTradeImport" type="button">從截圖匯入成交</button><button class="secondary-button" id="addTransaction" type="button">＋ 新增交易／股利</button></div></div><div class="ledger-filters"><label>交易類型<select id="ledgerTypeFilter"><option value="">全部</option><option value="buy">買進</option><option value="sell">賣出</option><option value="dividend">股利</option></select></label><label>股票<input id="ledgerTextFilter" type="search" placeholder="搜尋代號或名稱" maxlength="80"></label></div><div class="table-wrap"><table class="feature-table"><thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>價格／每股股利</th><th>費用</th><th>損益／股利</th></tr></thead><tbody id="transactionsBody"></tbody></table><div id="emptyTransactions" class="empty-state"><b>還沒有交易紀錄</b><p>初始持股可先用「新增持股」建立，再記錄之後的交易。</p></div></div></section>
+      <section id="ledger" class="content-card feature-card">
+        <div class="section-heading"><div><h2>交易與股利紀錄</h2><p class="news-intro">記錄台股買賣、股利與交易費用。</p></div><div class="heading-actions ledger-heading-actions"><button class="secondary-button" id="openTradeImport" type="button">從截圖匯入成交</button><button class="secondary-button" id="addTransaction" type="button">＋ 新增交易／股利</button></div></div>
+        <section id="dividendTracker" class="dividend-tracker" aria-labelledby="dividendTrackerHeading">
+          <div class="section-heading"><div><h3 id="dividendTrackerHeading">現金股息偵測</h3><p class="news-intro">查詢台股與 ETF 近半年及已公告的未來配息。到發放日後，可核對實收金額再入帳。</p></div><button type="button" class="secondary-button" data-dividend-refresh>更新配息</button></div>
+          <p class="trend-status" role="status" data-dividend-status></p>
+          <div class="table-wrap" hidden><table class="feature-table"><caption class="sr-only">台股現金配息公告與入帳狀態</caption><thead><tr><th scope="col">股票</th><th scope="col">除息日</th><th scope="col">預定發放日</th><th scope="col">每股股息（NT$）</th><th scope="col">稅費前預估</th><th scope="col">入帳狀態</th></tr></thead><tbody data-dividend-rows></tbody></table></div>
+          <small>資料來源 FinMind。端股只查詢股票代號，股數和實收金額由端股帳本管理。</small>
+        </section>
+        <div class="ledger-filters"><label>交易類型<select id="ledgerTypeFilter"><option value="">全部</option><option value="buy">買進</option><option value="sell">賣出</option><option value="dividend">股利</option></select></label><label>股票<input id="ledgerTextFilter" type="search" placeholder="搜尋代號或名稱" maxlength="80"></label></div>
+        <div class="table-wrap"><table class="feature-table"><thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>價格／每股股利</th><th>費用</th><th>損益／股利</th></tr></thead><tbody id="transactionsBody"></tbody></table><div id="emptyTransactions" class="empty-state"><b>還沒有交易紀錄</b><p>初始持股可先用「新增持股」建立，再記錄之後的交易。</p></div></div>
+      </section>
 
       <section id="allocation" class="content-card feature-card"><div class="section-heading"><div><h2>目標配置檢視</h2><p class="news-intro">設定台股的目標比例，查看目前市值與目標的差距。</p></div></div><div id="allocationContent" class="allocation-list"></div></section>
 
@@ -248,6 +258,15 @@
   <dialog id="holdingDialog" class="modal"><form id="holdingForm" method="dialog"><div class="modal-heading"><div><h2 id="holdingDialogTitle">新增持股</h2></div><button type="button" class="close-button" data-close="holdingDialog" aria-label="關閉">×</button></div><input type="hidden" id="holdingId"><input type="hidden" id="holdingMarket" value="tw"><input type="hidden" id="holdingSymbol"><input type="hidden" id="holdingExchange"><input type="hidden" id="holdingMicCode"><input type="hidden" id="holdingCurrency" value="TWD"><small id="holdingMarketInfo" class="holding-market-info">台灣持股 · 金額以新台幣顯示</small><label>股票代號或名稱<input id="stockName" required maxlength="80" placeholder="例如：2330 台積電"><small id="holdingNameHelp">請填 4–6 碼股票代號，才能自動比對行情。海外持股請至個股查詢選擇股票後加入。</small></label><div class="form-row"><label>持有股數<input id="shares" required type="number" min="0.0001" step="any" placeholder="1000"></label><label>平均成本（每股）<input id="avgCost" required type="number" min="0" step="any" placeholder="850"></label></div><div class="form-row"><label>備用價格（每股）<input id="currentPrice" required type="number" min="0" step="any" placeholder="900"></label><label>目標配置比例（%）<input id="targetWeight" type="number" min="0" max="100" step="0.1" placeholder="例如：20"></label></div><small>行情服務暫時無資料時，以備用價格估值。目標比例可留空。</small><div class="modal-actions"><button type="button" class="secondary-button" data-close="holdingDialog">取消</button><button type="submit" class="primary-button">儲存持股</button></div></form></dialog>
 
   <dialog id="transactionDialog" class="modal"><form id="transactionForm" method="dialog"><div class="modal-heading"><div><h2>新增交易／股利</h2></div><button type="button" class="close-button" data-close="transactionDialog" aria-label="關閉">×</button></div><div class="form-row"><label>類型<select id="transactionType"><option value="buy">買進</option><option value="sell">賣出</option><option value="dividend">股利</option></select></label><label>日期<input id="transactionDate" required type="date"></label></div><label>股票<input id="transactionStock" required list="stockOptions" placeholder="例如：2330 台積電"></label><div class="form-row"><label>股數<input id="transactionShares" required type="number" min="0.0001" step="any"></label><label id="transactionPriceLabel">成交價（每股）<input id="transactionPrice" required type="number" min="0" step="any"></label></div><div class="form-row"><label>手續費<input id="transactionFees" type="number" min="0" step="any" value="0"></label><label>交易稅<input id="transactionTax" type="number" min="0" step="any" value="0"></label></div><label>備註（選填）<input id="transactionNote" maxlength="120" placeholder="例如：定期定額"></label><div class="modal-actions"><button type="button" class="secondary-button" data-close="transactionDialog">取消</button><button type="submit" class="primary-button">儲存紀錄</button></div></form></dialog>
+  <dialog id="dividendReviewDialog" class="modal" aria-labelledby="dividendReviewTitle">
+    <form id="dividendReviewForm" method="dialog">
+      <div class="modal-heading"><h2 id="dividendReviewTitle">確認現金股息</h2><button type="button" class="close-button" data-close="dividendReviewDialog" aria-label="關閉">×</button></div>
+      <p id="dividendReviewDetails"></p>
+      <div class="form-row"><label>符合配息資格的股數<input id="dividendReviewShares" type="number" min="0.0001" step="any" required></label><label>實際收款日<input id="dividendReviewDate" type="date" required></label></div>
+      <label>實收金額（NT$）<input id="dividendReviewAmount" type="number" min="0.01" step="0.01" inputmode="decimal" required><small>請依銀行或券商明細輸入扣除稅費後的金額。</small></label>
+      <div class="modal-actions"><button type="button" class="secondary-button" data-close="dividendReviewDialog">取消</button><button type="submit" class="primary-button">確認並登錄</button></div>
+    </form>
+  </dialog>
 
   <dialog id="alertDialog" class="modal"><form id="alertForm" method="dialog"><div class="modal-heading"><div><h2>設定價格提醒</h2></div><button type="button" class="close-button" data-close="alertDialog" aria-label="關閉">×</button></div><label>股票<input id="alertStock" required list="stockOptions" placeholder="例如：2330 台積電"></label><div class="form-row"><label>觸發條件<select id="alertDirection"><option value="above">到達或高於</option><option value="below">到達或低於</option></select></label><label>目標價格<input id="alertTarget" required type="number" min="0.01" step="any"></label></div><div class="modal-actions"><button type="button" class="secondary-button" data-close="alertDialog">取消</button><button type="submit" class="primary-button">儲存提醒</button></div></form></dialog>
 
@@ -380,6 +399,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261128c"></script>
+  <script type="module" src="app.js?v=20261128d"></script>
 </body>
 </html>
