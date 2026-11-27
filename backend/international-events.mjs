@@ -16,7 +16,7 @@ export function companyProfiles(payload, market) {
     if (!/^[1-9]\d{3}$/.test(code) || !name) return [];
     const legalName = normalized(item['公司名稱'] ?? item.CompanyName);
     return [{
-      code, name, market,
+      code, name, market, industryCode: normalized(item['產業別'] ?? item.SecuritiesIndustryCode).padStart(2, '0'),
       aliases: [legalName, legalName.replace(/股份有限公司$/u, ''), item['英文簡稱'] ?? item.Symbol].map(normalized).filter(Boolean)
     }];
   });

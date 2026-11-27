@@ -518,3 +518,26 @@ body{background:var(--bg);font-size:14px}.sidebar{width:250px;padding:24px 16px 
     font-size: 12px;
   }
 }
+
+.performance-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.performance-controls label { display: grid; gap: 5px; flex: 1 1 140px; min-width: 0; color: var(--ink); font-weight: 600; }
+.performance-controls label:first-child { flex-basis: 210px; }
+.performance-controls input, .performance-controls select { width: 100%; min-width: 0; min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--ink); font: inherit; }
+.performance-choices { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 16px; max-height: 150px; overflow-y: auto; }
+.performance-choices button { min-height: 36px; padding: 5px 9px; }
+.performance-result svg { display: block; width: 100%; max-height: 330px; color: #506675; margin-bottom: 12px; }
+.performance-result svg text { fill: currentColor; font-size: 14px; }
+.performance-result th i { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--series-color); }
+.performance-note, .performance-block > p, .performance-block small { color: #526a75; line-height: 1.65; }
+.performance-note { margin: 14px 0 0; }
+.performance-block { margin-block: 12px; padding: 15px 0; border-top: 1px solid var(--line); }
+.performance-block h3 { margin: 0 0 8px; font-size: 16px; }
+.performance-block h4 { margin: 0 0 8px; font-size: 14px; }
+.performance-weights, .health-metrics, .performance-factors { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 10px; margin: 10px 0; }
+.performance-weights > div, .health-metrics > div, .performance-factors article { padding: 12px; border: 1px solid var(--line); border-radius: 7px; }
+.performance-weights ul, .performance-warnings { margin: 0; padding: 0; list-style: none; }
+.performance-weights li { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 0; }
+.health-metrics > div { display: grid; gap: 5px; }
+.health-metrics strong, .performance-factors strong { font-size: 18px; }
+.performance-factors p { margin: 6px 0; }
+.performance-warnings { color: #84421b; background: #fcf4e9; border-inline-start: 3px solid #ae6e38; padding: 8px 12px; line-height: 1.6; }

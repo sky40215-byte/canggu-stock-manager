@@ -4,6 +4,7 @@ import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261126k';
 import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
 import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=20261128b';
+import { mountMarketPerformance } from './market-performance.js?v=20261128c';
 
 (() => {
   'use strict';
@@ -453,6 +454,7 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
     } finally { button.disabled = false; }
   }
   function renderStockWatchlist() {
+    marketPerformance.refresh();
     $('watchlistCount').textContent = `${state.watchlist.length} 檔`;
     if (!state.watchlist.length) { $('stockWatchlist').innerHTML = '<div class="stock-watch-empty">還沒有待觀察股票。查詢個股後按「加入自選」。</div>'; return; }
     const selectedGroup = $('watchlistGroupFilter').value || 'all', visibleCodes = state.watchlist.filter((code) => selectedGroup === 'all' || (state.watchlistGroups[code] || '觀察中') === selectedGroup);
@@ -619,13 +621,10 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
       $('insightContent').innerHTML = '<div class="insight-empty"><b>新增持股後開始檢視</b><span>系統會依部位集中度、最新行情變動與損益列出研究待辦。</span></div>';
       return;
     }
-    const marketValue = holdings.reduce((sum, item) => sum + livePrice(item) * num(item.shares), 0);
     const cards = [];
     holdings.forEach((item) => {
       const code = stockCode(item.name), quote = quoteMap.get(code), value = livePrice(item) * num(item.shares);
-      const weight = marketValue ? value / marketValue * 100 : 0;
       const cost = num(item.cost) * num(item.shares), rate = cost ? ((value - cost) / cost) * 100 : 0;
-      if (weight >= 40) cards.push(`<article class="insight-item"><span class="insight-mark warn">!</span><div><b>${esc(item.name)}：部位集中度偏高</b><p>約占目前持倉市值 ${weight.toFixed(1)}%。可檢視分散程度、資金用途與可承受波動。</p>${holdingScenarioButton(item)}</div></article>`);
       const dailyMove = quote ? quoteChangePct(quote) : null;
       if (dailyMove != null && Math.abs(dailyMove) >= 5) cards.push(`<article class="insight-item"><span class="insight-mark warn">↕</span><div><b>${esc(item.name)}：最近交易日波動較大</b><p>官方行情顯示漲跌 ${pct(dailyMove)}。可核對公告、新聞與事件日期。</p></div></article>`);
       if (rate <= -10) cards.push(`<article class="insight-item"><span class="insight-mark down">↓</span><div><b>${esc(item.name)}：重新檢查原始投資假設</b><p>目前未實現損益約 ${pct(rate)}。回顧持有期限、資金需求與原先研究紀錄；成本價本身不代表合理價值。</p></div></article>`);
@@ -1808,7 +1807,7 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
     ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillStyle='#89938d';ctx.fillText(candles[0].date, left, height-8);ctx.textAlign='right';ctx.fillText(candles.at(-1).date, right, height-8);
   }
   window.addEventListener('resize', () => { if (trendData && !$('trendAnalysis').hidden) drawTrendChart(trendData.candles); if (heldStockData && !$('holdingAnalysis').hidden) drawHoldingCandles(heldStockData.candles); });
-  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '投資檢視', riskLab: '持倉壓力測試', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢與自選', candidates: '候選股篩選', watchlist: '價格觀察紀錄', news: '新聞與公告', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究來源', workspace: '多功能工作區' };
+  const pageTitles = { overview: '投資總覽', holdings: '我的持股', ledger: '交易與股利', allocation: '資產配置', alerts: '價格提醒', events: '公司事件', journal: '投資日誌', insights: '持股健檢', riskLab: '持倉壓力測試', trendAnalysis: '技術趨勢', holdingAnalysis: '持股分析', topup: '加碼試算', stockDesk: '個股查詢與自選', performance: '區間績效比較', candidates: '候選股篩選', watchlist: '價格觀察紀錄', news: '新聞與公告', globalTaiwanResearch: '國際事件與台股', assistant: '詢問助理', references: '研究來源', workspace: '多功能工作區' };
   const workspaceGrid = $('workspacePanelGrid'), workspaceHome = new Map();
   const workspaceTouch = window.matchMedia('(pointer: coarse)');
   const workspaceStacked = () => workspaceGrid.clientWidth < (workspaceTouch.matches ? 920 : 700);
@@ -2009,6 +2008,7 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
     });
     updateWorkspaceControls();
     scheduleWorkspaceLayout();
+    if (workspaceOpenPages.includes('insights')) marketPerformance.openHealth();
     if (servicesStarted) maybeLoadWorkspaceHolding();
   }
   function maybeLoadWorkspaceHolding() {
@@ -2099,6 +2099,7 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
     $('watchlist').hidden = page !== 'watchlist';
     $('references').hidden = page !== 'references';
     if (page === 'workspace') renderWorkspacePanels();
+    if (page === 'insights') marketPerformance.openHealth();
     if (page === 'holdingAnalysis' && $('heldStockSelect').value && (!heldStockData || heldStockData.holdingId !== $('heldStockSelect').value)) loadHeldStock();
     if (page === 'riskLab') stressLab.refresh();
     const activeNavGroup = [...document.querySelectorAll('.sidebar nav .nav-link')].find((link) => link.hash === `#${page}`)?.closest('.nav-group');
@@ -2138,6 +2139,16 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
   });
   document.querySelector('.brand').addEventListener('click', (event) => { event.preventDefault(); setMobileNav(false); showPage('overview', true); });
   window.addEventListener('hashchange', () => showPage(location.hash.slice(1)));
+  const marketPerformance = mountMarketPerformance({
+    element: $('performance'), health: $('insights'), escape: esc, fetchMarket: fugleFetch,
+    getIdentity: () => cloudUser?.id || 'local',
+    getWatchlist: () => state.watchlist.map(String).map((code) => ({ code, name: [code, quoteMap.get(code)?.name].filter(Boolean).join(' ') })),
+    getPositions: () => state.holdings.filter((item) => holdingMarket(item) === 'tw').map((item) => {
+      const code = String(item.symbol || item.name.match(/^\s*(\d{4,6}[A-Z]?)(?=$|\s)/i)?.[1] || stockCode(item.name)).toUpperCase();
+      const quote = quoteMap.get(code);
+      return { code, name: item.name, shares: num(item.shares), price: quote?.price ?? num(item.price), backup: !quote };
+    })
+  });
   const stressLab = mountPortfolioStress($('riskLab'), {
     getPositions: () => state.holdings.map((item) => {
       const quote = holdingQuote(item), currency = holdingCurrency(item);
@@ -2169,7 +2180,7 @@ import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=202611
     $('stockLookupInput').value = query;
     $('stockLookupForm').requestSubmit();
   }
-  const quickAliases = { riskLab: '風險壓力回落持股風險 stress', workspace: '版型面板排版 desk', stockDesk: '報價個股行情自選 lookup',
+  const quickAliases = { riskLab: '風險壓力回落持股風險 stress', insights: '投資檢視回撤波動集中度產業價值成長籌碼技術', performance: '自選股報酬區間漲跌', workspace: '版型面板排版 desk', stockDesk: '報價個股行情自選 lookup',
     ledger: '交易買進賣出股利', topup: '加倉補倉回本試算', news: '市場動態新聞公告', candidates: '選股推薦股號', watchlist: '趨勢觀察價格' };
   mountQuickSearch({
     button: $('openQuickSearch'), dialog: $('quickSearchDialog'), input: $('quickSearchInput'), results: $('quickSearchResults'),

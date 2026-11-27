@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261128b">
+  <link rel="stylesheet" href="styles.css?v=20261128c">
   <link rel="stylesheet" href="workbench.css?v=20261126l">
 </head>
 <body>
@@ -22,13 +22,13 @@
       <button type="button" class="mobile-nav-toggle" id="mobileNavToggle" aria-expanded="false" aria-controls="appNavigation">選單</button></div>
       <nav id="appNavigation" aria-label="主選單">
         <details class="nav-group" open><summary>投資組合</summary>
-          <a class="nav-link active" href="#overview" aria-current="page">投資總覽</a><a class="nav-link" href="#holdings">我的持股</a><a class="nav-link" href="#allocation">資產配置</a><a class="nav-link" href="#insights">投資檢視</a><a class="nav-link" href="#riskLab">持倉壓力測試</a><a class="nav-link" href="#topup">加碼試算</a>
+          <a class="nav-link active" href="#overview" aria-current="page">投資總覽</a><a class="nav-link" href="#holdings">我的持股</a><a class="nav-link" href="#allocation">資產配置</a><a class="nav-link" href="#insights">持股健檢</a><a class="nav-link" href="#riskLab">持倉壓力測試</a><a class="nav-link" href="#topup">加碼試算</a>
         </details>
         <details class="nav-group"><summary>交易紀錄</summary>
           <a class="nav-link" href="#ledger">交易與股利</a><a class="nav-link" href="#journal">投資日誌</a><a class="nav-link" href="#alerts">價格提醒</a><a class="nav-link" href="#events">公司事件</a><a class="nav-link" href="#watchlist">價格觀察紀錄</a>
         </details>
         <details class="nav-group"><summary>市場研究</summary>
-          <a class="nav-link" href="#stockDesk">個股查詢與自選</a><a class="nav-link" href="#trendAnalysis">技術趨勢</a><a class="nav-link" href="#holdingAnalysis">持股分析</a><a class="nav-link" href="#candidates">候選股篩選</a><a class="nav-link" href="#news">新聞與公告</a><a class="nav-link" href="#globalTaiwanResearch">國際事件與台股</a><a class="nav-link" href="#assistant">詢問助理</a><a class="nav-link" href="#references">研究來源</a>
+          <a class="nav-link" href="#stockDesk">個股查詢與自選</a><a class="nav-link" href="#performance">區間績效比較</a><a class="nav-link" href="#trendAnalysis">技術趨勢</a><a class="nav-link" href="#holdingAnalysis">持股分析</a><a class="nav-link" href="#candidates">候選股篩選</a><a class="nav-link" href="#news">新聞與公告</a><a class="nav-link" href="#globalTaiwanResearch">國際事件與台股</a><a class="nav-link" href="#assistant">詢問助理</a><a class="nav-link" href="#references">研究來源</a>
         </details>
         <a class="nav-link nav-workspace" href="#workspace">多功能工作區</a>
       </nav>
@@ -135,11 +135,32 @@
 
         <div id="overviewTaiwanTotals" class="desk-secondary-totals" aria-label="台股損益與股利">
           <article><div>已實現損益 <small id="realizedPnlNote"></small></div><strong class="metric" id="realizedPnl">—</strong></article>
-          <article><div>累計股利 <small>扣除已記錄的費用與稅</small></div><strong class="metric" id="dividendTotal">—</strong></article>
+          <article><div>累計股利 <small>依已登錄的股利紀錄，扣除費用與稅</small></div><strong class="metric" id="dividendTotal">—</strong></article>
         </div>
       </section>
 
-      <section id="insights" class="content-card insights-card"><div class="section-heading"><div><h2>投資檢視與研究待辦</h2><p class="news-intro">依台股持倉比重、最新行情與未實現損益整理提醒。</p></div><span class="source-count">本機計算</span></div><div id="insightContent" class="insight-list"></div><div class="insight-disclaimer"><span class="info-dot">i</span> 這些是檢視提示，不是個人化買賣建議；未納入財務目標、風險承受度、估值、股利、費用或稅務。預設提醒門檻為單一持倉 40%、單日漲跌 5%、損益 ±10%／+20%。</div></section>
+      <section id="insights" class="content-card insights-card">
+        <div class="section-heading"><div><h2>持股健檢</h2><p class="news-intro">查看台股持倉的集中度、歷史波動與研究待辦。</p></div></div>
+        <div class="performance-block"><h3>集中度警示</h3><p>個股達 40% 或同產業達 50% 時提醒。產業依證交所與櫃買中心分類。</p><div data-weights-result></div></div>
+        <div class="performance-block"><h3>近 90 日風險</h3><p>以目前股數固定回放還原日收盤價，估算這組持股從高點最多跌多少，以及日報酬的年化波動。股數、成本與損益保留在瀏覽器。</p><button type="button" class="secondary-button" data-health-submit>計算歷史風險</button><p data-health-status role="status"></p><div class="health-metrics" data-health-history></div></div>
+        <div class="performance-block"><h3>個股四面向評分</h3><p>價值、成長與籌碼使用 FinMind，技術使用 Fugle。各分數依顯示規則獨立計算，供同類公司研究。</p><div class="performance-controls"><label>持有的台股公司<select data-factor-symbol></select></label><button type="button" class="secondary-button" data-factor-submit>查看評分</button></div><div class="performance-factors" data-factor-result aria-live="polite"></div></div>
+        <div class="performance-block"><h3>行情與損益提醒</h3><div id="insightContent" class="insight-list"></div></div>
+      </section>
+
+      <section id="performance" class="content-card feature-card" aria-labelledby="performanceTitle">
+        <div class="section-heading"><div><h2 id="performanceTitle">區間績效比較</h2><p class="news-intro">選擇 2 至 5 檔台股，在同一組交易日比較。</p></div></div>
+        <form>
+          <div class="performance-controls">
+            <label>台股代號<input data-performance-symbols type="text" maxlength="64" placeholder="例如 2330、2454、0050" autocomplete="off" required></label>
+            <label>起日<input data-performance-from type="date" required></label>
+            <label>迄日<input data-performance-to type="date" required></label>
+            <button type="submit" class="primary-button">比較績效</button>
+          </div>
+          <div class="performance-choices" aria-label="從自選清單加入" data-performance-choices></div>
+        </form>
+        <p class="trend-status" role="status"></p><div class="performance-result" data-performance-result></div>
+        <p class="performance-note">使用 Fugle 還原日收盤價，第一個共同交易日為 100。以還原價估算漲跌，未計交易費用、個人現金流或匯率。</p>
+      </section>
 
       <section id="riskLab" class="content-card feature-card risk-lab" aria-labelledby="riskTitle">
         <div class="section-heading"><div><h2 id="riskTitle">持倉壓力測試</h2><p class="news-intro">設定市場或個股的假設漲跌，找出對持倉市值影響最大的部位。</p></div></div>
@@ -359,6 +380,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261128b"></script>
+  <script type="module" src="app.js?v=20261128c"></script>
 </body>
 </html>

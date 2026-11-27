@@ -431,11 +431,16 @@ async function quoteWithFallback(symbol, dailyRows = null) {
     priceType: '交易所最近收盤價（非盤中即時）', fallbackReason: fugleError
   };
 }
-async function fugleTrend(symbol, days) {
+async function fugleTrend(symbol, days, range) {
   if (!FUGLE_API_KEY) return { configured: false };
   const end = new Date(), start = new Date(end.getTime() - days * 86400000);
   const date = (value) => value.toISOString().slice(0, 10);
   const params = new URLSearchParams({ from: date(start), to: date(end), fields: 'open,high,low,close,volume', sort: 'asc' });
+  if (range) {
+    params.set('from', range.from);
+    params.set('to', range.to);
+    params.set('adjusted', 'true');
+  }
   while (true) {
     const now = Date.now();
     while (fugleHistoryRequests.length && now - fugleHistoryRequests[0] >= 60000) fugleHistoryRequests.shift();
@@ -1038,6 +1043,58 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/fugle/status') {
       if (!await requireAuthenticatedUser(req, res)) return;
       return send(res, 200, { configured: Boolean(FUGLE_API_KEY) });
+    }
+    if (url.pathname === '/api/fugle/performance' && req.method === 'GET') {
+      if (!await requireAuthenticatedUser(req, res)) return;
+      const codes = [...new Set((url.searchParams.get('symbols') || '').split(','))];
+      const from = url.searchParams.get('from'), to = url.searchParams.get('to');
+      const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+      const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '') && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+      if (codes.length > 15 || codes.some((code) => !/^\d{4,6}[A-Z]?$/.test(code))) return send(res, 400, { error: '每次可查詢 1 至 15 個台股代號。' });
+      if (!validDate(from) || !validDate(to) || from >= to || to > today || Date.parse(to) - Date.parse(from) > 364 * 86400000) return send(res, 400, { error: '請選擇有效的起訖日期，區間最多 364 天，結束日須為今天或之前。' });
+      if (!FUGLE_API_KEY) return send(res, 503, { error: '伺服器尚未設定 Fugle 行情金鑰。' });
+      const series = await Promise.all(codes.map(async (code) => {
+        try {
+          const { candles } = await fugleTrend(code, 0, { from, to });
+          return { code, candles: candles.map(({ date, close }) => ({ date: String(date).slice(0, 10), close })).filter((row) => row.date >= from && row.date <= to && row.close > 0) };
+        } catch (error) {
+          return { code, error: error.status ? error.message : '暫時無法取得歷史行情。' };
+        }
+      }));
+      return send(res, 200, { series, source: 'Fugle 還原日收盤價' });
+    }
+    if (url.pathname === '/api/market/industries' && req.method === 'GET') {
+      const companies = await publicTaiwanCompanies();
+      if (!companies.length) return send(res, 502, { error: '目前無法讀取上市櫃產業資料。' });
+      return send(res, 200, { industries: Object.fromEntries(companies.map(({ code, industryCode }) => [code, industryCode])) });
+    }
+    if (url.pathname === '/api/market/stock-factors' && req.method === 'GET') {
+      if (!await requireAuthenticatedUser(req, res)) return;
+      const symbol = url.searchParams.get('symbol') || '';
+      if (!/^\d{4}$/.test(symbol) || symbol.startsWith('00')) return send(res, 400, { error: '請選擇一檔台股公司。' });
+      const chipStart = new Date(Date.now() - 55 * 86400000).toISOString().slice(0, 10);
+      const [fundamental, chip, trend] = await Promise.allSettled([
+        fundamentals(symbol), finMindDataset('TaiwanStockInstitutionalInvestorsBuySell', symbol, chipStart), fugleTrend(symbol, 115)
+      ]);
+      const activity = new Map();
+      const institutions = new Set(['Foreign_Investor', 'Foreign_Dealer_Self', 'Investment_Trust', 'Dealer_self', 'Dealer_Hedging']);
+      for (const row of chip.value || []) {
+        if (!row.date || !institutions.has(row.name) || row.buy == null || row.sell == null) continue;
+        const buy = Number(row.buy), sell = Number(row.sell);
+        if (!Number.isFinite(buy) || !Number.isFinite(sell)) continue;
+        const key = `${row.date}:${row.name}`;
+        activity.set(key, { date: row.date, buy, sell });
+      }
+      const latestDates = [...new Set([...activity.values()].map(({ date }) => date))].sort().slice(-20);
+      const latestRows = [...activity.values()].filter(({ date }) => latestDates.includes(date));
+      const buy = latestRows.reduce((sum, row) => sum + row.buy, 0), sell = latestRows.reduce((sum, row) => sum + row.sell, 0);
+      const candles = trend.value?.candles || [], last = candles.at(-1), previous = candles.at(-21);
+      return send(res, 200, {
+        valuation: fundamental.value?.valuation || null,
+        revenue: fundamental.value?.revenue?.slice(-3) || [],
+        chip: latestDates.length >= 20 && buy + sell > 0 ? { ratio: (buy - sell) / (buy + sell) * 100, date: latestDates.at(-1) } : null,
+        technical: last?.sma20 > 0 && last?.sma60 > 0 && previous?.close > 0 && last.close > 0 ? { close: last.close, sma20: last.sma20, sma60: last.sma60, momentum: (last.close / previous.close - 1) * 100, date: last.date } : null
+      });
     }
     if (url.pathname === '/api/fugle/trend') {
       if (!await requireAuthenticatedUser(req, res)) return;

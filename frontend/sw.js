@@ -1,10 +1,11 @@
-const CACHE_NAME = 'canggu-app-shell-v33';
+const CACHE_NAME = 'canggu-app-shell-v34';
 const APP_SHELL = [
   '/',
   '/index.html',
-  '/styles.css?v=20261128b',
+  '/styles.css?v=20261128c',
   '/workbench.css?v=20261126l',
-  '/app.js?v=20261128b',
+  '/app.js?v=20261128c',
+  '/market-performance.js?v=20261128c',
   '/account-auth.js?v=20261128b',
   '/holding-import-dialog.js?v=20261126h',
   '/holding-image-import.js?v=20261126h',
