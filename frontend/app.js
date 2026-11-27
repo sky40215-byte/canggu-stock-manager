@@ -3,6 +3,7 @@ import { formatScenarioMoney, mountScenarioComparison } from './scenario-compare
 import { mountQuickSearch } from './quick-search.js?v=20261125d';
 import { mountPortfolioStress } from './portfolio-stress.js?v=20261126k';
 import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
+import { getAccountCallback, mountAccountAuth } from './account-auth.js?v=20261128a';
 
 (() => {
   'use strict';
@@ -24,7 +25,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   let taiwanQuoteFreshness = { state: 'pending', label: '台股行情待更新', title: '' };
   let toastTimer;
   let supabaseClient = null, cloudUser = null, cloudReady = false, cloudSyncEnabled = false, cloudSyncTimer = null, lastCloudUpdatedAt = '';
-  let servicesStarted = false, accountMode = 'login', cloudRevision = 0, cloudDirty = false, cloudWrite = null;
+  let servicesStarted = false, accountAuth = null, cloudRevision = 0, cloudDirty = false, cloudWrite = null;
   const accountStorageKey = (id) => STORAGE_KEY + '.account.' + id;
 
   function loadState() {
@@ -55,13 +56,17 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
     if (!value || typeof value !== 'object' || Array.isArray(value)) return structuredClone(initialState);
     return { ...Object.fromEntries(['holdings','observations','transactions','alerts','journal','watchlist','events'].map((key) => [key, Array.isArray(value[key]) ? value[key] : []])), watchlistGroups: value.watchlistGroups && typeof value.watchlistGroups === 'object' && !Array.isArray(value.watchlistGroups) ? value.watchlistGroups : {}, settings: value.settings && typeof value.settings === 'object' ? { ...initialState.settings, ...value.settings, topupReviewReminders: Array.isArray(value.settings.topupReviewReminders) ? value.settings.topupReviewReminders : [] } : { ...initialState.settings } };
   }
-  function showAccountGate(message = '') {
+  function showAccountGate(message) {
     $('accountGate').hidden = false; $('appShell').hidden = true; $('logoutBtn').hidden = true;
     document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
-    if (message) $('accountStatus').textContent = message;
+    if (typeof message === 'string') {
+      $('accountStatus').textContent = message;
+      delete $('accountStatus').dataset.tone;
+    }
   }
   function showSyncedApp() {
     $('accountGate').hidden = true; $('appShell').hidden = false; $('logoutBtn').hidden = false;
+    accountAuth.setProfile(cloudUser);
     $('syncBadge').innerHTML = '<i></i>雲端同步已開啟';
     $('syncBadge').title = lastCloudUpdatedAt ? `最近同步：${new Date(lastCloudUpdatedAt).toLocaleString('zh-TW')}` : '雲端資料同步已啟用';
   }
@@ -86,24 +91,19 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       startAppServices(); return;
     }
     if (!window.supabase?.createClient) { showAccountGate('登入元件載入失敗，請重新整理並確認網路連線。'); return; }
-    supabaseClient = window.supabase.createClient(config.url, config.anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
-    $('accountModeToggle').addEventListener('click', () => {
-      accountMode = accountMode === 'login' ? 'signup' : 'login';
-      $('accountSubmit').textContent = accountMode === 'login' ? '登入' : '建立帳號';
-      $('accountPassword').autocomplete = accountMode === 'login' ? 'current-password' : 'new-password';
-      $('accountModeToggle').textContent = accountMode === 'login' ? '還沒有帳號？建立帳號' : '已有帳號？返回登入';
-      $('accountStatus').textContent = '';
-    });
-    $('accountForm').addEventListener('submit', async (event) => {
-      event.preventDefault(); const button = $('accountSubmit'); button.disabled = true; $('accountStatus').textContent = accountMode === 'login' ? '正在登入…' : '正在建立帳號…';
-      try {
-        const email = $('accountEmail').value.trim(), password = $('accountPassword').value;
-        const result = accountMode === 'login' ? await supabaseClient.auth.signInWithPassword({ email, password }) : await supabaseClient.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } });
-        if (result.error) throw result.error;
-        if (result.data.session) await activateCloudUser(result.data.session);
-        else $('accountStatus').textContent = '帳號已建立。請先到電子信箱完成驗證，再回來登入。';
-      } catch (error) { $('accountStatus').textContent = error.message || '登入失敗，請檢查帳號和密碼。'; }
-      finally { button.disabled = false; }
+    const callback = getAccountCallback(location);
+    if (callback.recovery || callback.expired) history.replaceState(history.state, '', location.pathname);
+    supabaseClient = window.supabase.createClient(config.url, config.anonKey, { auth: {
+      persistSession: true, autoRefreshToken: true, detectSessionInUrl: !callback.recovery
+    } });
+    accountAuth = mountAccountAuth({
+      auth: supabaseClient.auth,
+      createRecoveryAuth: () => window.supabase.createClient(config.url, config.anonKey, { auth: {
+        persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'canggu-password-recovery'
+      } }).auth,
+      onSession: activateCloudUser,
+      onShowGate: showAccountGate,
+      onNotice: showToast
     });
     $('logoutBtn').addEventListener('click', async () => {
       if (cloudDirty) await saveCloudData();
@@ -111,19 +111,34 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
       if (error) showToast('登出失敗，請稍後再試。');
     });
     supabaseClient.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || !session) {
+      if (event === 'SIGNED_OUT') {
         const wasSignedIn = Boolean(cloudUser || activatingUserId);
         cloudSyncEnabled = false; cloudReady = false; cloudUser = null; activatingUserId = '';
         clearTimeout(cloudSyncTimer); cloudSyncTimer = null;
+        accountAuth.setProfile(null);
+        if (accountAuth.isRecovering() && !wasSignedIn) return;
         showAccountGate('請登入以讀取你的雲端資料。');
         if (wasSignedIn) location.reload();
+      } else if (session && !accountAuth.isRecovering() && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED')) {
+        setTimeout(() => {
+          if (accountAuth.isRecovering()) return;
+          if (cloudReady && cloudUser?.id === session.user?.id) {
+            cloudUser = session.user;
+            accountAuth.setProfile(cloudUser);
+          } else if (event !== 'USER_UPDATED') {
+            void activateCloudUser(session);
+          }
+        }, 0);
       }
-      else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') setTimeout(() => activateCloudUser(session), 0);
     });
+    if (callback.recovery) {
+      await accountAuth.openRecoveryLink(callback.tokens);
+      return;
+    }
     const { data, error } = await supabaseClient.auth.getSession();
     if (error) { showAccountGate(`無法讀取登入狀態：${error.message}`); return; }
     if (data.session) await activateCloudUser(data.session);
-    else showAccountGate('請登入或建立帳號。登入後會載入該帳號的持倉。');
+    else showAccountGate(callback.expired ? '驗證連結已失效，請重新寄送驗證信。' : '');
   }
   let activatingUserId = '';
   async function activateCloudUser(session) {
@@ -1126,7 +1141,7 @@ import { mountHoldingImport } from './holding-import-dialog.js?v=20261126h';
   const deskSettings = $('deskSettings');
   document.addEventListener('click', (event) => {
     if (!deskSettings.open) return;
-    if (!deskSettings.contains(event.target) || event.target.closest('#importBtn, #exportBtn, #installAppBtn, #logoutBtn, .desk-settings-panel a')) {
+    if (!deskSettings.contains(event.target) || event.target.closest('#importBtn, #exportBtn, #installAppBtn, #accountProfileBtn, #logoutBtn, .desk-settings-panel a')) {
       deskSettings.open = false;
     }
   });

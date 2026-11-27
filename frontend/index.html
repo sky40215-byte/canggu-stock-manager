@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>端股｜個人股票管理</title>
-  <link rel="stylesheet" href="styles.css?v=20261126h">
+  <link rel="stylesheet" href="styles.css?v=20261128a">
   <link rel="stylesheet" href="workbench.css?v=20261126l">
 </head>
 <body>
@@ -49,6 +49,7 @@
               <button id="importBtn" type="button">匯入備份</button>
               <button id="exportBtn" type="button">匯出備份</button>
               <button id="installAppBtn" type="button" hidden>安裝 App</button>
+              <button id="accountProfileBtn" class="account-profile-button" type="button" hidden>設定帳號暱稱</button>
               <button id="logoutBtn" type="button" hidden>登出帳號</button>
               <a href="/demo.html">競賽示範</a>
               <details class="desk-privacy"><summary>資料與隱私</summary><p>登入後資料會同步到自己的帳號。查詢新聞時，股票代號、名稱及輸入的關鍵字會送至 Google News。</p></details>
@@ -238,7 +239,53 @@
   <dialog id="importPasswordDialog" class="modal"><form id="importPasswordForm" method="dialog"><div class="modal-heading"><div><h2>輸入備份密碼</h2></div><button type="button" class="close-button" data-close="importPasswordDialog" aria-label="關閉">×</button></div><label>備份密碼<input id="importPassword" required type="password" autocomplete="current-password"></label><div class="modal-actions"><button type="button" class="secondary-button" data-close="importPasswordDialog">取消</button><button type="submit" class="primary-button">解密並還原</button></div></form></dialog>
 
   <dialog id="priceDialog" class="modal"><form id="priceForm" method="dialog"><div class="modal-heading"><div><h2>新增價格觀察</h2></div><button type="button" class="close-button" data-close="priceDialog" aria-label="關閉">×</button></div><label>股票<input id="priceStock" required list="stockOptions" placeholder="輸入或選擇持股"><datalist id="stockOptions"></datalist></label><div class="form-row"><label>觀察日期<input id="priceDate" required type="date"></label><label>收盤／觀察價格<input id="observedPrice" required type="number" min="0" step="any" placeholder="900"></label></div><label>備註（選填）<input id="priceNote" maxlength="120" placeholder="例如：法說會後觀察"></label><div class="modal-actions"><button type="button" class="secondary-button" data-close="priceDialog">取消</button><button type="submit" class="primary-button">新增觀察</button></div></form></dialog>
-  <section id="accountGate" class="account-gate" hidden><div class="account-card"><div class="brand-mark">端</div><h1>登入端股</h1><p>使用同一個帳號，即可在電腦與手機查看相同的持股、交易和自選清單。</p><form id="accountForm"><label>電子郵件<input id="accountEmail" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>密碼<input id="accountPassword" type="password" minlength="8" autocomplete="current-password" required placeholder="至少 8 個字元"></label><button id="accountSubmit" class="primary-button" type="submit">登入</button></form><button id="accountModeToggle" class="text-button account-mode-toggle" type="button">還沒有帳號？建立帳號</button><a class="account-demo-link" href="/demo.html">免登入體驗競賽示範 ↗</a><div id="accountStatus" class="account-status" role="status" aria-live="polite">資料同步設定載入中…</div><small>每個帳號只能讀取自己的資料。請記住登入密碼，並定期匯出加密備份。</small></div></section>
+  <section id="accountGate" class="account-gate" aria-labelledby="accountTitle" hidden>
+    <div class="account-card">
+      <div class="brand-mark" aria-hidden="true">端</div>
+      <h1 id="accountTitle" tabindex="-1">登入端股</h1>
+      <p id="accountIntro">登入後可在電腦和手機查看同一份持股、交易與自選清單。</p>
+      <form id="accountForm" aria-describedby="accountStatus">
+        <label id="accountEmailField">電子郵件
+          <input id="accountEmail" type="email" autocomplete="username" autocapitalize="none" spellcheck="false" required placeholder="name@example.com">
+        </label>
+        <label id="accountNicknameField" hidden>帳號暱稱
+          <input id="accountNickname" type="text" autocomplete="nickname" maxlength="32" disabled>
+        </label>
+        <label id="accountPasswordField"><span id="accountPasswordLabel">密碼</span>
+          <input id="accountPassword" type="password" autocomplete="current-password" required>
+        </label>
+        <label id="accountConfirmField" hidden>確認密碼
+          <input id="accountConfirm" type="password" autocomplete="new-password" disabled>
+        </label>
+        <label id="accountCodeField" hidden>電子郵件驗證碼
+          <input id="accountCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" maxlength="10" disabled>
+        </label>
+        <button id="accountSubmit" class="primary-button" type="submit" disabled>登入</button>
+      </form>
+      <div class="account-actions" id="accountActions" hidden>
+        <button id="accountModeToggle" class="text-button" type="button">建立帳號</button>
+        <button id="accountForgot" class="text-button" type="button">忘記密碼？</button>
+        <button id="accountVerify" class="text-button" type="button">輸入註冊驗證碼</button>
+        <button id="accountResend" class="text-button" type="button" hidden>重新寄送驗證信</button>
+      </div>
+      <div id="accountStatus" class="account-status" role="status" aria-live="polite">資料同步設定載入中…</div>
+      <a class="account-demo-link" href="/demo.html">免登入體驗競賽示範 ↗</a>
+    </div>
+  </section>
+  <dialog id="accountProfileDialog" class="modal" aria-labelledby="accountProfileTitle">
+    <form id="accountProfileForm" method="dialog">
+      <div class="modal-heading">
+        <div><h2 id="accountProfileTitle">帳號暱稱</h2><p>暱稱會顯示在設定選單。登入時使用電子郵件。</p></div>
+        <button type="button" class="close-button" data-close="accountProfileDialog" aria-label="關閉">×</button>
+      </div>
+      <label>暱稱<input id="accountProfileName" type="text" autocomplete="nickname" maxlength="32" required></label>
+      <p class="account-status" id="accountProfileStatus" role="status"></p>
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" data-close="accountProfileDialog">取消</button>
+        <button type="submit" class="primary-button" id="accountProfileSave">儲存暱稱</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="holdingImportDialog" class="modal holding-import-modal" aria-labelledby="holdingImportTitle">
     <form id="holdingImportForm" method="dialog" novalidate>
       <div class="modal-heading">
@@ -311,6 +358,6 @@
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script type="module" src="app.js?v=20261126m"></script>
+  <script type="module" src="app.js?v=20261128a"></script>
 </body>
 </html>

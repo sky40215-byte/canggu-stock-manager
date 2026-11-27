@@ -60,7 +60,33 @@ body{background:linear-gradient(130deg,#edf3f5 0%,#f4f6f7 52%,#f2f5f2 100%);colo
 @media(max-width:700px){.stock-desk-card{padding:16px 13px}.stock-lookup-form{padding:13px}.stock-lookup-form>div{align-items:stretch}.stock-lookup-form .primary-button{padding:9px;font-size:10px}.stock-quote-card{grid-template-columns:minmax(0,1fr) auto;gap:10px}.stock-quote-actions{grid-column:1/-1;justify-content:flex-end}.stock-watch-row{grid-template-columns:minmax(0,1fr) auto;gap:8px}.stock-watch-actions{grid-column:1/-1}.stock-watch-actions .secondary-button{flex:1;justify-content:center}}
 .indicator-glossary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px;margin:12px 0 16px;padding:14px 16px;border:1px solid #e1eaeb;border-radius:10px;background:#f5f9fa;color:#647984;font-size:10px;line-height:1.7}.indicator-glossary>b{grid-column:1/-1;color:#24495a;font-size:11px}.indicator-glossary abbr{color:#24495a;text-decoration:underline dotted;text-underline-offset:3px;cursor:help}.indicator-card small{line-height:1.5}
 @media(max-width:700px){.indicator-glossary{grid-template-columns:1fr;padding:12px}.indicator-glossary>b{grid-column:auto}}
-.account-gate{position:fixed;inset:0;z-index:20;display:grid;place-items:center;overflow:auto;padding:22px;background:linear-gradient(135deg,#14394e,#1c6872 58%,#e6f1ef)}.account-gate[hidden],.app-shell[hidden]{display:none!important}.account-card{width:min(440px,100%);padding:32px;border:1px solid #e1ebec;border-radius:18px;background:#fff;box-shadow:0 24px 70px #0d2d3a40}.account-card .brand-mark{margin-bottom:19px}.account-card h1{margin:8px 0;font-size:25px;color:#17394b}.account-card>p{margin:9px 0 21px;color:#71838b;font-size:12px;line-height:1.8}.account-card form label{display:block;margin:13px 0;color:#506975;font-size:11px;font-weight:600}.account-card input{display:block;width:100%;height:43px;margin-top:6px;padding:0 11px;border:1px solid #dce6e8;border-radius:8px;font:13px var(--font)}.account-card form .primary-button{width:100%;justify-content:center;margin-top:8px}.account-mode-toggle{margin-top:17px;font-size:11px}.account-status{min-height:24px;margin-top:12px;color:#a34d42;font-size:11px;line-height:1.6}.account-card>small{display:block;margin-top:12px;color:#89969b;font-size:9px;line-height:1.7}
+.account-gate {
+  position: fixed; inset: 0; z-index: 20; display: grid; grid-template-columns: minmax(0, 1fr);
+  overflow: auto; padding: max(18px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom));
+  background: linear-gradient(135deg, #14394e, #1c6872 58%, #e6f1ef);
+}
+.account-gate[hidden], .account-card [hidden], .app-shell[hidden] { display: none !important; }
+.account-card {
+  width: min(440px, 100%); margin: auto; padding: clamp(18px, 6vw, 32px);
+  border: 1px solid #e1ebec; border-radius: 18px; background: #fff; box-shadow: 0 24px 70px #0d2d3a40;
+}
+.account-card .brand-mark { margin-bottom: 14px; }
+.account-card h1 { margin: 0; font-size: 26px; color: #17394b; }
+.account-card > p { margin: 8px 0 17px; color: #506975; font-size: 14px; line-height: 1.65; }
+.account-card form label { display: block; margin: 11px 0; color: #365360; font-size: 13px; font-weight: 600; }
+.account-card input {
+  display: block; width: 100%; min-height: 44px; margin-top: 5px; padding: 7px 11px;
+  border: 1px solid #a6b9bf; border-radius: 8px; font: 16px var(--font);
+}
+.account-card form .primary-button { width: 100%; min-height: 44px; justify-content: center; margin-top: 5px; }
+.account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 14px; margin-top: 7px; }
+.account-actions .text-button { min-height: 44px; padding: 0; color: #235b60; font-size: 13px; }
+.account-status { color: #506975; font-size: 13px; line-height: 1.55; }
+.account-status:not(:empty) { margin: 5px 0 10px; }
+.account-status[data-tone="error"], #accountProfileStatus { color: #9b392d; }
+.account-status[data-tone="success"] { color: #256354; }
+.account-card :is(input, button, a):focus-visible { outline: 2px solid #17696f; outline-offset: 2px; }
+.account-profile-button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Stock desk groups, company event calendar, and eye comfort palette. */
 .watchlist-tools{display:flex;align-items:center;gap:10px;margin:-2px 0 12px;color:var(--muted);font-size:11px}.watchlist-tools label{font-weight:600}.watchlist-tools select,.watch-group-picker select{height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink);font:11px var(--font)}.watchlist-tools>span{margin-left:auto;font-size:10px}.watch-group-picker select{height:32px;max-width:112px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
